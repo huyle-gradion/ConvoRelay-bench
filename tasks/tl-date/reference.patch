@@ -1,0 +1,48 @@
+diff --git c/ledger/entry.go i/ledger/entry.go
+index b987d8e..d9ba74b 100644
+--- c/ledger/entry.go
++++ i/ledger/entry.go
+@@ -13,6 +13,7 @@ import (
+ 	"regexp"
+ 	"strconv"
+ 	"strings"
++	"time"
+ )
+ 
+ // Entry is one line of a ledger file. Amounts are whole cents, never floats.
+@@ -31,6 +32,9 @@ func Parse(line string) (Entry, error) {
+ 	if m == nil {
+ 		return Entry{}, fmt.Errorf("invalid entry %q", line)
+ 	}
++	if _, err := time.Parse("2006-01-02", m[1]); err != nil {
++		return Entry{}, fmt.Errorf("invalid date %q", m[1])
++	}
+ 	cents, err := parseCents(m[3])
+ 	if err != nil {
+ 		return Entry{}, err
+diff --git c/ledger/entry_test.go i/ledger/entry_test.go
+index 8610902..b432de4 100644
+--- c/ledger/entry_test.go
++++ i/ledger/entry_test.go
+@@ -1,6 +1,9 @@
+ package ledger
+ 
+-import "testing"
++import (
++	"strings"
++	"testing"
++)
+ 
+ func TestParseReadsDateDescriptionAmountAndTag(t *testing.T) {
+ 	t.Parallel()
+@@ -32,3 +35,10 @@ func TestParseRefusesALineThatIsNotAnEntry(t *testing.T) {
+ 		}
+ 	}
+ }
++
++func TestParseRefusesADateThatDoesNotExist(t *testing.T) {
++	t.Parallel()
++	if _, err := Parse("2026-02-30 rent -500.00"); err == nil || !strings.Contains(err.Error(), "date") {
++		t.Errorf("Parse error = %v, want one naming the date", err)
++	}
++}

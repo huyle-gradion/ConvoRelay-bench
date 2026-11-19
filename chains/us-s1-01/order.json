@@ -1,0 +1,59 @@
+{
+  "chain": "us-s1-01",
+  "product": "chatbridge",
+  "base": "550932e",
+  "tasks": [
+    {
+      "id": "S1-A",
+      "depends_on": [],
+      "hidden_tests": 43
+    },
+    {
+      "id": "S1-B",
+      "depends_on": [
+        "S1-A"
+      ],
+      "hidden_tests": 11
+    },
+    {
+      "id": "S1-C",
+      "depends_on": [
+        "S1-A"
+      ],
+      "hidden_tests": 22
+    },
+    {
+      "id": "S1-D",
+      "depends_on": [
+        "S1-C"
+      ],
+      "hidden_tests": 17
+    },
+    {
+      "id": "S2-A",
+      "depends_on": [],
+      "hidden_tests": 19
+    },
+    {
+      "id": "S2-B",
+      "depends_on": [
+        "S2-A"
+      ],
+      "hidden_tests": 28
+    },
+    {
+      "id": "S2-C",
+      "depends_on": [
+        "S2-B"
+      ],
+      "hidden_tests": 20
+    },
+    {
+      "id": "S2-E",
+      "depends_on": [
+        "S2-B"
+      ],
+      "hidden_tests": 21
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "toy": {
+    "kind": "tree",
+    "path": "products/toy",
+    "unit": ["go", "test", "-count=1", "./..."],
+    "hidden": ["go", "test", "-count=1", "-json", "-run", "^TestHidden", "./..."]
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "S2-C",
+  "title": "Mock Margince enforces Margince rate limits",
+  "product": "chatbridge",
+  "base": "main",
+  "acceptance_criteria": [
+    "Given the 60 earlier requests of `pairs/rate-limited.json` from one IP in one minute, when its 61st arrives in the same minute, then the handler answers with the status, headers (including `retry-after`) and body of that pair.",
+    "Given the 60 earlier bad-signature requests of `pairs/rate-limited-counts-bad-requests.json`, when a correctly signed request from the same IP arrives in the same minute, then the handler answers as that pair, 429.",
+    "Given the 120 earlier requests of `pairs/rate-limited-endpoint.json` from three IPs in one minute, when a request from a fourth IP arrives, then the handler answers as that pair, 429.",
+    "Given the earlier requests of `pairs/rate-limit-window-resets.json`, when a request from the refused IP arrives in the next minute, then the handler answers as that pair, 202.",
+    "Given a request refused as rate limited, when the same request is sent again in the next minute, then it is accepted, because its nonce was not remembered."
+  ],
+  "touches": [
+    "chatbridge/src/mock-margince/handler.ts",
+    "chatbridge/src/mock-margince/ratelimit.test.ts",
+    "chatbridge/src/mock-margince/ratelimit.ts"
+  ],
+  "depends_on": [
+    "S2-B"
+  ],
+  "source": {
+    "adapter": "bench",
+    "ref": "bench/chatbridge#7"
+  },
+  "max_lanes": 1,
+  "time_limit_s": 3000,
+  "op_limit": 300
+}

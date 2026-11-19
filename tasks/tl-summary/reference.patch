@@ -1,0 +1,69 @@
+diff --git c/internal/cli/cli.go i/internal/cli/cli.go
+index b9decaf..40d48f6 100644
+--- c/internal/cli/cli.go
++++ i/internal/cli/cli.go
+@@ -10,7 +10,7 @@ import (
+ 	"tinyledger/ledger"
+ )
+ 
+-const usage = "usage: tl balance|list|tags [--file PATH]"
++const usage = "usage: tl balance|list|tags|summary [--file PATH]"
+ 
+ // Run runs one tl command and returns its exit code: 0 ok, 1 the ledger could not be read, 2 usage.
+ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+@@ -22,7 +22,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+ 	set.SetOutput(stderr)
+ 	file := set.String("file", "", "ledger file; stdin when empty")
+ 	switch args[0] {
+-	case "balance", "list", "tags":
++	case "balance", "list", "tags", "summary":
+ 	default:
+ 		fmt.Fprintln(stderr, usage)
+ 		return 2
+@@ -57,6 +57,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+ 		fmt.Fprint(stdout, l.List())
+ 	case "tags":
+ 		fmt.Fprint(stdout, l.TagReport())
++	case "summary":
++		fmt.Fprint(stdout, l.Summary())
+ 	}
+ 	return 0
+ }
+diff --git c/internal/cli/cli_test.go i/internal/cli/cli_test.go
+index f9b94d6..8ce1389 100644
+--- c/internal/cli/cli_test.go
++++ i/internal/cli/cli_test.go
+@@ -44,3 +44,11 @@ func TestAnUnknownCommandPrintsUsageAndExitsTwo(t *testing.T) {
+ 		t.Errorf("= %d %q, want exit 2 and the usage", code, errOut)
+ 	}
+ }
++
++func TestSummaryPrintsCountIncomeSpentAndBalance(t *testing.T) {
++	t.Parallel()
++	want := "entries 2\nincome 100.00\nspent 3.50\nbalance 96.50\n"
++	if code, out, _ := run(t, sample, "summary"); code != 0 || out != want {
++		t.Errorf("summary = %d %q, want 0 %q", code, out, want)
++	}
++}
+diff --git c/ledger/report.go i/ledger/report.go
+index e321771..5b1092a 100644
+--- c/ledger/report.go
++++ i/ledger/report.go
+@@ -37,3 +37,17 @@ func (l Ledger) List() string {
+ 	}
+ 	return b.String()
+ }
++
++// Summary is the entry count, the income, the spending (as a positive amount) and the balance.
++func (l Ledger) Summary() string {
++	var income, spent int64
++	for _, e := range l {
++		if e.Cents > 0 {
++			income += e.Cents
++		} else {
++			spent -= e.Cents
++		}
++	}
++	return fmt.Sprintf("entries %d\nincome %s\nspent %s\nbalance %s\n",
++		len(l), FormatCents(income), FormatCents(spent), FormatCents(l.Balance()))
++}

@@ -1,0 +1,25 @@
+{
+  "id": "S1-A",
+  "title": "Load a Fake Source fixture file",
+  "product": "chatbridge",
+  "base": "main",
+  "acceptance_criteria": [
+    "Given a file with a direct message at 0 ms on line 1, a blank line, a group message at 500 ms on line 3 and a reaction at 900 ms on line 4, when it is loaded, then three events come back in file order with every field as written and `line` equal to 1, 3 and 4.",
+    "Given a line that is not valid JSON, when the file is loaded, then loading fails with an error whose message starts with that line's number and says `not valid JSON`.",
+    "Given a line that lacks a required field or holds a field of the wrong type or value, when the file is loaded, then loading fails with an error naming that line number and the field.",
+    "Given an event whose `at_ms` is smaller than the event before it, when the file is loaded, then loading fails with an error naming that event's line number.",
+    "Given a reaction whose `target` is not the line number of an earlier `message`, when the file is loaded, then loading fails with an error naming the reaction's line number.",
+    "Given a message whose text is 40,000 `x` characters, when the file is loaded, then the event's text is exactly those 40,000 characters."
+  ],
+  "touches": [
+    "chatbridge/src/fake/fixture.test.ts",
+    "chatbridge/src/fake/fixture.ts"
+  ],
+  "source": {
+    "adapter": "bench",
+    "ref": "bench/chatbridge#1"
+  },
+  "max_lanes": 1,
+  "time_limit_s": 3000,
+  "op_limit": 300
+}

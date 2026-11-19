@@ -1,0 +1,112 @@
+diff --git c/factory/docs/generic-factory.md i/factory/docs/generic-factory.md
+index 5fb8568..c9ef8b0 100644
+--- c/factory/docs/generic-factory.md
++++ i/factory/docs/generic-factory.md
+@@ -170,7 +170,8 @@ covers quality and security.
+    trunk commit, else the factory's `skills/<name>/SKILL.md`. A skill
+    found in neither place is an error, at `prepare` and at `context`.
+ 3. `context_docs`, as paths the worker must read. They are listed,
+-   not inlined, so the context stays small (Factor 3). Not built yet.
++   not inlined, so the context stays small (Factor 3). The profile reads
++   and checks the key; `t12 context` does not list the paths yet.
+ 
+ The context JSON's `instructions` list records the source (`project`
+ or `factory`), path, and SHA-256 of every prompt and skill it used,
+diff --git c/factory/docs/reference.md i/factory/docs/reference.md
+index ac9fe8a..7ec9860 100644
+--- c/factory/docs/reference.md
++++ i/factory/docs/reference.md
+@@ -427,7 +427,7 @@ may come from an issue tracker:
+ | `verify_deps` | The task may only narrow the profile's list; a profile without one allows none |
+ | `tiers`, `lint_command`, `assertion_pattern`, `failure_count_pattern`, `red_stub_max_lines`, `refactor_skip_max_lines` | A task may set one only where the profile does not |
+ | budgets | The task wins |
+-| `name`, `test_build_command`, `build_timeout_s`, `qc_timeout_s`, `test_report`, `not_red_pattern`, `protected_paths`, `security_review_paths`, `roles`, `intake`, `skills`, `delivery`, `jobs` | Profile only; a task may not set them |
++| `name`, `test_build_command`, `build_timeout_s`, `qc_timeout_s`, `test_report`, `not_red_pattern`, `protected_paths`, `security_review_paths`, `context_docs`, `roles`, `intake`, `skills`, `delivery`, `jobs` | Profile only; a task may not set them |
+ | `max_lanes` | The task wins, then the profile, then the calibrated value |
+ 
+ With products, `tiers`, `static`, `test_build_command`, `test_report`,
+diff --git c/factory/internal/profile/apply.go i/factory/internal/profile/apply.go
+index 658539b..a6c4749 100644
+--- c/factory/internal/profile/apply.go
++++ i/factory/internal/profile/apply.go
+@@ -87,7 +87,7 @@ func setDefault(m map[string]any, key string, value any) {
+ }
+ 
+ // profileOnly are the keys a task file may not carry.
+-var profileOnly = []string{"protected_paths", "security_review_paths", "roles", "intake", "skills",
++var profileOnly = []string{"protected_paths", "security_review_paths", "context_docs", "roles", "intake", "skills",
+ 	"delivery", "jobs", "name", "test_build_command", "build_timeout_s", "qc_timeout_s",
+ 	"test_report", "not_red_pattern", "verify_skill"}
+ 
+diff --git c/factory/internal/profile/profile.go i/factory/internal/profile/profile.go
+index 27f616f..5d9f5ed 100644
+--- c/factory/internal/profile/profile.go
++++ i/factory/internal/profile/profile.go
+@@ -94,7 +94,9 @@ type Profile struct {
+ 	MaxLanes            int             `json:"max_lanes,omitempty"`
+ 	ProtectedPaths      []string        `json:"protected_paths"`
+ 	SecurityReviewPaths []string        `json:"security_review_paths"`
+-	Roles               map[string]Role `json:"roles"`
++	// ContextDocs are repo-relative paths a worker must read, in the order the profile lists them.
++	ContextDocs []string        `json:"context_docs,omitempty"`
++	Roles       map[string]Role `json:"roles"`
+ 	// VerifySkill is the folder of the product's verify skill, relative to the product's root
+ 	// (the repo root when the profile declares no products); see VerifySkillDir.
+ 	VerifySkill string `json:"verify_skill,omitempty"`
+@@ -209,6 +211,11 @@ func Parse(data []byte) (Profile, error) {
+ 	if p.SecurityReviewPaths, err = scopePaths("security_review_paths", p.SecurityReviewPaths); err != nil {
+ 		return p, err
+ 	}
++	for _, doc := range p.ContextDocs {
++		if !IsRelative(doc) {
++			return p, fmt.Errorf("%s: context_docs must be a list of relative paths: %q", Path, p.ContextDocs)
++		}
++	}
+ 	if v, ok := raw["roles"]; ok {
+ 		var spec map[string]json.RawMessage
+ 		if err := json.Unmarshal(v, &spec); err != nil || spec == nil {
+@@ -239,7 +246,7 @@ var nullKeys = []string{"lint_command", "failure_count_pattern"}
+ 
+ // stringLists are the keys holding a list of plain strings: Go would read a null entry as "".
+ var stringLists = []string{"test_build_command", "lint_command", "required_reviews", "verify_deps",
+-	"protected_paths", "security_review_paths"}
++	"protected_paths", "security_review_paths", "context_docs"}
+ 
+ // checkShape refuses what decoding into a typed field would silently accept: null for a
+ // key that cannot be null, and null entries in a list of strings.
+@@ -269,7 +276,7 @@ var keys = append([]string{"version", "name", "products", "tiers", "test_build_c
+ 	"qc_timeout_s", "test_report", "assertion_pattern", "failure_count_pattern", "not_red_pattern",
+ 	"static", "required_reviews", "require_probes", "sandbox_adapter", "sandbox_image",
+ 	"lint_command", "red_stub_max_lines", "refactor_skip_max_lines", "verify_deps",
+-	"max_lanes", "protected_paths", "security_review_paths", "roles", "intake", "skills", "delivery",
++	"max_lanes", "protected_paths", "security_review_paths", "context_docs", "roles", "intake", "skills", "delivery",
+ 	"jobs", "verify_skill"}, BudgetKeys...)
+ 
+ type field struct {
+@@ -300,6 +307,7 @@ func fields(p *Profile) []field {
+ 		{"protected_paths", "a list of relative paths", &p.ProtectedPaths},
+ 		{"security_review_paths", "a list of relative paths", &p.SecurityReviewPaths},
+ 		{"verify_skill", "a relative path", &p.VerifySkill},
++		{"context_docs", "a list of relative paths", &p.ContextDocs},
+ 	}
+ }
+ 
+diff --git c/factory/tests/unit/profile_test.go i/factory/tests/unit/profile_test.go
+index edf8601..a38be5c 100644
+--- c/factory/tests/unit/profile_test.go
++++ i/factory/tests/unit/profile_test.go
+@@ -92,3 +92,14 @@ func TestABadProfileIsRefusedWithTheReason(t *testing.T) {
+ 		}
+ 	}
+ }
++
++func TestContextDocsKeepTheirOrderAndMustStayInsideTheRepo(t *testing.T) {
++	t.Parallel()
++	p, err := profile.Parse([]byte(`{"version":3,"context_docs":["docs/b.md","docs/a.md"]}`))
++	if err != nil || len(p.ContextDocs) != 2 || p.ContextDocs[0] != "docs/b.md" {
++		t.Errorf("Parse = %v, %v; want the two docs in order", p.ContextDocs, err)
++	}
++	if _, err := profile.Parse([]byte(`{"version":3,"context_docs":["../x.md"]}`)); err == nil {
++		t.Error("Parse accepted a context doc outside the repo")
++	}
++}

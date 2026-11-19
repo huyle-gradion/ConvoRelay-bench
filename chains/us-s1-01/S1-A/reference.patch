@@ -1,0 +1,269 @@
+diff --git a/chatbridge/src/fake/fixture.test.ts b/chatbridge/src/fake/fixture.test.ts
+new file mode 100644
+index 0000000..2d422b4
+--- /dev/null
++++ b/chatbridge/src/fake/fixture.test.ts
+@@ -0,0 +1,140 @@
++import { describe, expect, it } from "vitest";
++import { loadFixture } from "./fixture.ts";
++
++const direct = { id: "customer-a", type: "direct" };
++const group = { id: "work-group", type: "group" };
++
++function row(fields: Record<string, unknown>): string {
++  return JSON.stringify(fields);
++}
++
++function message(at_ms: number, text = "hi", extra: Record<string, unknown> = {}): string {
++  return row({ at_ms, kind: "message", chat: direct, sender: "Customer A", text, ...extra });
++}
++
++function failureOf(text: string): string {
++  try {
++    loadFixture(text);
++  } catch (error) {
++    return error instanceof Error ? error.message : String(error);
++  }
++  throw new Error("loadFixture did not throw");
++}
++
++describe("loadFixture", () => {
++  it("returns the events in file order with their line numbers, skipping blank lines", () => {
++    const text = [
++      message(0, "Hello"),
++      "   ",
++      row({ at_ms: 500, kind: "message", chat: group, sender: "Customer B", text: "Meeting" }),
++      row({ at_ms: 900, kind: "reaction", chat: direct, sender: "Customer B", target: 1, emoji: "👍" }),
++    ].join("\n");
++    expect(loadFixture(text)).toEqual([
++      { line: 1, at_ms: 0, kind: "message", chat: direct, sender: "Customer A", text: "Hello" },
++      { line: 3, at_ms: 500, kind: "message", chat: group, sender: "Customer B", text: "Meeting" },
++      { line: 4, at_ms: 900, kind: "reaction", chat: direct, sender: "Customer B", target: 1, emoji: "👍" },
++    ]);
++  });
++
++  it("returns nothing for an empty file and accepts a trailing newline and CRLF", () => {
++    expect(loadFixture("")).toEqual([]);
++    expect(loadFixture(`${message(0)}\r\n${message(1)}\r\n`).map((e) => e.line)).toEqual([1, 2]);
++  });
++
++  it("ignores other keys and does not return them", () => {
++    const [event] = loadFixture(message(0, "hi", { note: "x", line: 99 }));
++    expect(event).toEqual({ line: 1, at_ms: 0, kind: "message", chat: direct, sender: "Customer A", text: "hi" });
++  });
++
++  it("allows an empty text", () => {
++    expect(loadFixture(message(0, ""))).toHaveLength(1);
++  });
++
++  it("fails on a line that is not valid JSON, naming the line", () => {
++    const message_ = failureOf(`${message(0)}\n\n{oops`);
++    expect(message_.startsWith("line 3: ")).toBe(true);
++    expect(message_).toContain("not valid JSON");
++  });
++
++  it("fails on a JSON value that is not an object", () => {
++    expect(failureOf("[1]").startsWith("line 1: ")).toBe(true);
++    expect(failureOf("null").startsWith("line 1: ")).toBe(true);
++  });
++
++  it.each([
++    ["at_ms missing", row({ kind: "message", chat: direct, sender: "A", text: "x" }), "at_ms"],
++    ["at_ms negative", message(-1), "at_ms"],
++    ["at_ms fractional", message(1.5), "at_ms"],
++    ["at_ms a string", message("5" as unknown as number), "at_ms"],
++    ["kind unknown", row({ at_ms: 0, kind: "edit", chat: direct, sender: "A", text: "x" }), "kind"],
++    ["chat missing", row({ at_ms: 0, kind: "message", sender: "A", text: "x" }), "chat"],
++    ["chat.id missing", row({ at_ms: 0, kind: "message", chat: { type: "direct" }, sender: "A", text: "x" }), "chat.id"],
++    ["chat.id a number", row({ at_ms: 0, kind: "message", chat: { id: 7, type: "direct" }, sender: "A", text: "x" }), "chat.id"],
++    ["chat.type unknown", row({ at_ms: 0, kind: "message", chat: { id: "c", type: "channel" }, sender: "A", text: "x" }), "chat.type"],
++    ["sender missing", row({ at_ms: 0, kind: "message", chat: direct, text: "x" }), "sender"],
++    ["sender empty", row({ at_ms: 0, kind: "message", chat: direct, sender: "", text: "x" }), "sender"],
++    ["text missing", row({ at_ms: 0, kind: "message", chat: direct, sender: "A" }), "text"],
++    ["text a number", row({ at_ms: 0, kind: "message", chat: direct, sender: "A", text: 5 }), "text"],
++  ])("fails with the line and the field when %s", (_name, bad, field) => {
++    const error = failureOf(`${message(0)}\n${bad}`);
++    expect(error.startsWith("line 2: ")).toBe(true);
++    expect(error).toContain(field);
++  });
++
++  it("uses the documented messages for the required and chat.type cases", () => {
++    expect(failureOf(`${message(0)}\n${row({ at_ms: 0, kind: "message", chat: direct, text: "x" })}`)).toBe(
++      "line 2: sender is required",
++    );
++    expect(failureOf(row({ at_ms: 0, kind: "message", chat: { id: "c", type: "x" }, sender: "A", text: "" }))).toBe(
++      'line 1: chat.type must be "direct" or "group"',
++    );
++  });
++
++  it.each([
++    ["target missing", { target: undefined, emoji: "👍" }, "target"],
++    ["target zero", { target: 0, emoji: "👍" }, "target"],
++    ["target fractional", { target: 1.5, emoji: "👍" }, "target"],
++    ["emoji missing", { target: 1 }, "emoji"],
++    ["emoji empty", { target: 1, emoji: "" }, "emoji"],
++  ])("fails on a reaction with %s", (_name, fields, field) => {
++    const reaction = row({ at_ms: 1, kind: "reaction", chat: direct, sender: "B", ...fields });
++    const error = failureOf(`${message(0)}\n${reaction}`);
++    expect(error.startsWith("line 2: ")).toBe(true);
++    expect(error).toContain(field);
++  });
++
++  it("fails when an event is earlier than the one before it, naming that event's line", () => {
++    const error = failureOf([message(0), message(2000), "", message(1999)].join("\n"));
++    expect(error.startsWith("line 4: ")).toBe(true);
++    expect(error).toContain("at_ms");
++  });
++
++  it("accepts events at the same time", () => {
++    expect(loadFixture([message(100), message(100)].join("\n"))).toHaveLength(2);
++  });
++
++  it.each([
++    ["a line that holds no event", 5],
++    ["another reaction", 2],
++    ["itself", 3],
++  ])("fails when a reaction targets %s", (_name, target) => {
++    const lines = [
++      message(0),
++      row({ at_ms: 1, kind: "reaction", chat: direct, sender: "B", target: 1, emoji: "👍" }),
++      row({ at_ms: 2, kind: "reaction", chat: direct, sender: "B", target, emoji: "👍" }),
++    ];
++    const error = failureOf(lines.join("\n"));
++    expect(error.startsWith("line 3: ")).toBe(true);
++    expect(error).toContain("target");
++  });
++
++  it("fails when a reaction targets a line that comes after it", () => {
++    const text = [row({ at_ms: 0, kind: "reaction", chat: direct, sender: "B", target: 2, emoji: "👍" }), message(0)].join("\n");
++    expect(failureOf(text).startsWith("line 1: ")).toBe(true);
++  });
++
++  it("keeps a message of 40,000 characters whole", () => {
++    const [event] = loadFixture(message(0, "x".repeat(40000)));
++    expect(event?.kind === "message" && event.text).toBe("x".repeat(40000));
++  });
++});
+diff --git a/chatbridge/src/fake/fixture.ts b/chatbridge/src/fake/fixture.ts
+new file mode 100644
+index 0000000..eb30929
+--- /dev/null
++++ b/chatbridge/src/fake/fixture.ts
+@@ -0,0 +1,117 @@
++/** A chat the Fake Source speaks in. */
++export interface FixtureChat {
++  id: string;
++  type: "direct" | "group";
++}
++
++interface FixtureEventBase {
++  /** 1-based line of the fixture file the event was read from. */
++  line: number;
++  /** Milliseconds from the start of the replay. */
++  at_ms: number;
++  chat: FixtureChat;
++  sender: string;
++}
++
++export interface FixtureMessage extends FixtureEventBase {
++  kind: "message";
++  text: string;
++}
++
++export interface FixtureReaction extends FixtureEventBase {
++  kind: "reaction";
++  /** Line number of the message the reaction is for. */
++  target: number;
++  emoji: string;
++}
++
++export type FixtureEvent = FixtureMessage | FixtureReaction;
++
++type Fields = Record<string, unknown>;
++
++function isRecord(value: unknown): value is Fields {
++  return typeof value === "object" && value !== null && !Array.isArray(value);
++}
++
++function fail(line: number, problem: string): never {
++  throw new Error(`line ${line}: ${problem}`);
++}
++
++function required(line: number, fields: Fields, key: string, path: string): unknown {
++  const value = fields[key];
++  if (value === undefined) fail(line, `${path} is required`);
++  return value;
++}
++
++function nonEmptyString(line: number, fields: Fields, key: string, path: string): string {
++  const value = required(line, fields, key, path);
++  if (typeof value !== "string" || value === "") fail(line, `${path} must be a non-empty string`);
++  return value;
++}
++
++function integer(line: number, fields: Fields, key: string, min: number, what: string): number {
++  const value = required(line, fields, key, key);
++  if (typeof value !== "number" || !Number.isInteger(value) || value < min) {
++    fail(line, `${key} must be ${what}`);
++  }
++  return value;
++}
++
++function parseChat(line: number, fields: Fields): FixtureChat {
++  const chat = required(line, fields, "chat", "chat");
++  if (!isRecord(chat)) fail(line, "chat must be an object");
++  const id = required(line, chat, "id", "chat.id");
++  if (typeof id !== "string") fail(line, "chat.id must be a string");
++  const type = required(line, chat, "type", "chat.type");
++  if (type !== "direct" && type !== "group") fail(line, 'chat.type must be "direct" or "group"');
++  return { id, type };
++}
++
++/**
++ * Turns the text of a Fake Source fixture (JSON Lines, one event per line) into its events, in file
++ * order. Blank lines are skipped but still count towards line numbers. Throws an `Error` starting
++ * with `line <n>: ` for the first line that is not a valid event.
++ */
++export function loadFixture(text: string): FixtureEvent[] {
++  const events: FixtureEvent[] = [];
++  const messageLines = new Set<number>();
++  let previousAt = 0;
++
++  text.split("\n").forEach((raw, index) => {
++    if (raw.trim() === "") return;
++    const line = index + 1;
++
++    let fields: unknown;
++    try {
++      fields = JSON.parse(raw);
++    } catch {
++      fail(line, "not valid JSON");
++    }
++    if (!isRecord(fields)) fail(line, "event must be a JSON object");
++
++    const at_ms = integer(line, fields, "at_ms", 0, "a non-negative integer");
++    const kind = required(line, fields, "kind", "kind");
++    if (kind !== "message" && kind !== "reaction") fail(line, 'kind must be "message" or "reaction"');
++    const chat = parseChat(line, fields);
++    const sender = nonEmptyString(line, fields, "sender", "sender");
++
++    let event: FixtureEvent;
++    if (kind === "message") {
++      const body = required(line, fields, "text", "text");
++      if (typeof body !== "string") fail(line, "text must be a string");
++      event = { line, at_ms, kind, chat, sender, text: body };
++    } else {
++      const target = integer(line, fields, "target", 1, "a positive integer");
++      const emoji = nonEmptyString(line, fields, "emoji", "emoji");
++      if (!messageLines.has(target)) fail(line, "target must be the line number of an earlier message");
++      event = { line, at_ms, kind, chat, sender, target, emoji };
++    }
++
++    if (at_ms < previousAt) fail(line, `at_ms must not be smaller than the previous event's (${previousAt})`);
++    previousAt = at_ms;
++    if (event.kind === "message") messageLines.add(line);
++    events.push(event);
++  });
++
++  return events;
++}

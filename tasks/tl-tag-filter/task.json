@@ -1,0 +1,22 @@
+{
+  "id": "tl-tag-filter",
+  "title": "Filter balance and list by tag",
+  "base": "main",
+  "acceptance_criteria": [
+    "Given entries tagged food (-3.50 and -9.00), gift (5.00) and one without a tag (7.00), when `tl balance --tag food` runs, then it prints `-12.50` and exits 0",
+    "Given the same entries, when `tl balance --tag nothing` runs, then it prints `0.00` and exits 0",
+    "Given the same entries, when `tl list --tag food` runs, then it prints only the two food entries, in file order, in the usual list format",
+    "Given entries tagged `food`, when `tl balance --tag Food` runs, then it prints `0.00`: tags are case-sensitive"
+  ],
+  "touches": [
+    "internal/cli/",
+    "ledger/"
+  ],
+  "source": {
+    "adapter": "bench",
+    "ref": "bench/tinyledger#3"
+  },
+  "max_lanes": 1,
+  "time_limit_s": 2400,
+  "op_limit": 250
+}

@@ -1,0 +1,187 @@
+diff --git a/chatbridge/src/fake/replay.test.ts b/chatbridge/src/fake/replay.test.ts
+new file mode 100644
+index 0000000..1baecca
+--- /dev/null
++++ b/chatbridge/src/fake/replay.test.ts
+@@ -0,0 +1,109 @@
++import { describe, expect, it } from "vitest";
++import { loadFixture } from "./fixture.ts";
++import type { ReplayedEvent } from "./replay.ts";
++import { replay } from "./replay.ts";
++
++const BASE = "2026-01-01T00:00:00Z";
++
++function fakeClock() {
++  const waits: number[] = [];
++  return {
++    waits,
++    sleep: (ms: number) => {
++      waits.push(ms);
++      return Promise.resolve();
++    },
++  };
++}
++
++function fixtureText(...rows: object[]): string {
++  return rows.map((row) => JSON.stringify(row)).join("\n");
++}
++
++const chat = { id: "c1", type: "direct" } as const;
++const message = (at_ms: number, text: string) => ({ at_ms, kind: "message", chat, sender: "A", text });
++
++const threeEvents = loadFixture(fixtureText(message(0, "a"), message(1000, "b"), message(3000, "c")));
++
++async function collect(source: AsyncIterable<ReplayedEvent>): Promise<ReplayedEvent[]> {
++  const out: ReplayedEvent[] = [];
++  for await (const event of source) out.push(event);
++  return out;
++}
++
++describe("replay", () => {
++  it("waits for each gap at speed 1 and emits the events in file order", async () => {
++    const clock = fakeClock();
++    const out = await collect(replay(threeEvents, { speed: 1, baseTime: BASE, clock }));
++    expect(clock.waits).toEqual([0, 1000, 2000]);
++    expect(out.map((e) => e.id)).toEqual(["fake:1", "fake:2", "fake:3"]);
++  });
++
++  it("defaults to speed 1", async () => {
++    const clock = fakeClock();
++    await collect(replay(threeEvents, { baseTime: BASE, clock }));
++    expect(clock.waits).toEqual([0, 1000, 2000]);
++  });
++
++  it("divides the gaps by the speed", async () => {
++    const clock = fakeClock();
++    await collect(replay(threeEvents, { speed: 10, baseTime: BASE, clock }));
++    expect(clock.waits).toEqual([0, 100, 200]);
++  });
++
++  it("never waits at speed 0 and still emits everything in order", async () => {
++    const clock = fakeClock();
++    const out = await collect(replay(threeEvents, { speed: 0, baseTime: BASE, clock }));
++    expect(clock.waits).toEqual([]);
++    expect(out.map((e) => e.id)).toEqual(["fake:1", "fake:2", "fake:3"]);
++  });
++
++  it("does nothing until the first next()", async () => {
++    const clock = fakeClock();
++    const source = replay(threeEvents, { baseTime: BASE, clock });
++    expect(clock.waits).toEqual([]);
++    await source.next();
++    expect(clock.waits).toEqual([0]);
++  });
++
++  it("derives ids, times and a reaction's target from the fixture", async () => {
++    const events = loadFixture(
++      [
++        "",
++        "",
++        "",
++        JSON.stringify(message(1500, "hello")),
++        "",
++        JSON.stringify({ at_ms: 2000, kind: "reaction", chat, sender: "B", target: 4, emoji: "👍" }),
++      ].join("\n"),
++    );
++    const out = await collect(replay(events, { speed: 0, baseTime: BASE, clock: fakeClock() }));
++    expect(out).toEqual([
++      { id: "fake:4", time: "2026-01-01T00:00:01.500Z", kind: "message", chat, sender: "A", text: "hello" },
++      { id: "fake:6", time: "2026-01-01T00:00:02.000Z", kind: "reaction", chat, sender: "B", target: "fake:4", emoji: "👍" },
++    ]);
++  });
++
++  it("emits keys in the documented order", async () => {
++    const events = loadFixture(
++      fixtureText(message(0, "hello"), { at_ms: 1, kind: "reaction", chat, sender: "B", target: 1, emoji: "👍" }),
++    );
++    const out = await collect(replay(events, { speed: 0, baseTime: BASE, clock: fakeClock() }));
++    expect(out.map((e) => Object.keys(e))).toEqual([
++      ["id", "time", "kind", "chat", "sender", "text"],
++      ["id", "time", "kind", "chat", "sender", "target", "emoji"],
++    ]);
++  });
++
++  it("gives identical output, key order included, when replayed twice", async () => {
++    const run = async () => JSON.stringify(await collect(replay(threeEvents, { speed: 0, baseTime: BASE, clock: fakeClock() })));
++    expect(await run()).toBe(await run());
++  });
++
++  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY])("rejects speed %s before emitting anything", async (speed) => {
++    const clock = fakeClock();
++    const source = replay(threeEvents, { speed, baseTime: BASE, clock });
++    await expect(source.next()).rejects.toThrow(/speed/);
++    expect(clock.waits).toEqual([]);
++  });
++});
+diff --git a/chatbridge/src/fake/replay.ts b/chatbridge/src/fake/replay.ts
+new file mode 100644
+index 0000000..a2302b4
+--- /dev/null
++++ b/chatbridge/src/fake/replay.ts
+@@ -0,0 +1,66 @@
++import type { FixtureChat, FixtureEvent } from "./fixture.ts";
++
++export interface ReplayOptions {
++  /** Time multiplier: 1 is real time, 10 ten times faster, 0 never waits. Defaults to 1. */
++  speed?: number;
++  /** ISO 8601 time that `at_ms` 0 stands for. The caller checks that it is valid. */
++  baseTime: string;
++  clock: { sleep(ms: number): Promise<void> };
++}
++
++interface ReplayedBase {
++  /** `fake:<line>` of the fixture file. */
++  id: string;
++  /** ISO 8601 with milliseconds: the base time plus the event's `at_ms`. */
++  time: string;
++}
++
++/** Key order matters: it is the order the events are printed in. */
++export type ReplayedMessage = ReplayedBase & { kind: "message"; chat: FixtureChat; sender: string; text: string };
++export type ReplayedReaction = ReplayedBase & {
++  kind: "reaction";
++  chat: FixtureChat;
++  sender: string;
++  /** Id of the message reacted to. */
++  target: string;
++  emoji: string;
++};
++export type ReplayedEvent = ReplayedMessage | ReplayedReaction;
++
++function replayed(event: FixtureEvent, base: number): ReplayedEvent {
++  const id = `fake:${event.line}`;
++  const time = new Date(base + event.at_ms).toISOString();
++  if (event.kind === "message") {
++    return { id, time, kind: event.kind, chat: event.chat, sender: event.sender, text: event.text };
++  }
++  return {
++    id,
++    time,
++    kind: event.kind,
++    chat: event.chat,
++    sender: event.sender,
++    target: `fake:${event.target}`,
++    emoji: event.emoji,
++  };
++}
++
++/**
++ * Yields the fixture's events in file order, waiting on `options.clock` for the gap before each one
++ * (divided by `speed`). Nothing runs until the first `next()`; a bad speed rejects that call.
++ */
++export async function* replay(
++  events: readonly FixtureEvent[],
++  options: ReplayOptions,
++): AsyncGenerator<ReplayedEvent> {
++  const speed = options.speed ?? 1;
++  if (!Number.isFinite(speed) || speed < 0) {
++    throw new Error(`speed must be a finite number of 0 or more, got ${speed}`);
++  }
++  const base = Date.parse(options.baseTime);
++  let previous = 0;
++  for (const event of events) {
++    if (speed > 0) await options.clock.sleep((event.at_ms - previous) / speed);
++    previous = event.at_ms;
++    yield replayed(event, base);
++  }
++}

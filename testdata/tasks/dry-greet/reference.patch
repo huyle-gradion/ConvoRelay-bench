@@ -1,0 +1,10 @@
+diff --git a/greet.go b/greet.go
+--- a/greet.go
++++ b/greet.go
+@@ -1,5 +1,5 @@
+ package toy
+ 
+ func Greet(name string) string {
+-	return "Hello!"
++	return "Hello, " + name + "!"
+ }

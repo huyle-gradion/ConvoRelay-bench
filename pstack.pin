@@ -1,0 +1,17 @@
+# The skills both arms of the bench are held to (README: "Held equal").
+#
+# pstack is Lauren Tan's skill stack, github.com/cursor/plugins/tree/main/pstack. The bench loads the
+# Claude Code port `pstack-claude` (the plugin installed with `/plugin install pstack@pstack-claude`),
+# because it ships the skills already translated for Claude Code. `lib/skills.sh` makes this exact tree
+# with `git archive` (never from a working copy, which may carry local edits) and refuses to run when
+# its hash differs.
+#
+#   source   where `rev` can be fetched when no local clone has it
+#   rev      the commit of the port (plugin version 0.9.135)
+#   tree     sha256 of `sha256sum` over every file of plugins/pstack at `rev`, paths sorted (lib/skills.sh tree_sha256)
+#   ponytail sha256 of ponytail-review/SKILL.md; pstack does not ship that skill, so it is a local user skill
+#            (~/.agents/skills/ponytail-review, or BENCH_PONYTAIL_REVIEW=PATH)
+source=https://github.com/michael-denyer/pstack-claude
+rev=bc09365fe61c725c486ba95157fc4048bf8a0b99
+tree=aab6a8f92f629cd79774ece892425164f23f6c016a79eb4bd97f3d9fc3a1dd91
+ponytail=33fe4ebe22a460924e5d4a261e223df22e409cc94ab76182bee9fb91a3ef022e

@@ -1,0 +1,28 @@
+{
+  "id": "S2-E",
+  "title": "chat-bridge mock-margince command",
+  "product": "chatbridge",
+  "base": "main",
+  "acceptance_criteria": [
+    "Given `MOCK_SECRET` set, when `mock-margince --secret-env MOCK_SECRET` runs, then `listen` is called with host `127.0.0.1`, port 8787 and a handler, stdout holds `listening on http://127.0.0.1:8787`, and the exit code is 0.",
+    "Given `--port 9000`, when the command runs, then `listen` gets port 9000.",
+    "Given the variable named by `--secret-env` is unset or empty, when the command runs, then `listen` is not called, stderr names the variable, and the exit code is 1.",
+    "Given no `--secret-env`, or a port that is not a whole number from 1 to 65535, when the command runs, then `listen` is not called, stderr shows the usage line and the exit code is 2.",
+    "Given a secret in the environment and a fake clock at `pairs/accepted.json`'s `at_ms`, when the handler passed to `listen` receives that pair's request signed with that secret, then it answers 202, and `pairs/bad-signature.json`'s request answers 401."
+  ],
+  "touches": [
+    "chatbridge/src/cli/main.ts",
+    "chatbridge/src/cli/mock-margince.test.ts",
+    "chatbridge/src/cli/mock-margince.ts"
+  ],
+  "depends_on": [
+    "S2-B"
+  ],
+  "source": {
+    "adapter": "bench",
+    "ref": "bench/chatbridge#8"
+  },
+  "max_lanes": 1,
+  "time_limit_s": 3000,
+  "op_limit": 300
+}

@@ -1,0 +1,220 @@
+diff --git a/chatbridge/src/cli/main.ts b/chatbridge/src/cli/main.ts
+index 471e9a4..b6581c1 100644
+--- a/chatbridge/src/cli/main.ts
++++ b/chatbridge/src/cli/main.ts
+@@ -1,5 +1,6 @@
+ import type { Command, Io } from "./io.ts";
+ import { runCommand, runUsage } from "./run.ts";
++import { mockMargince } from "./mock-margince.ts";
+ 
+ interface CommandEntry {
+   /** One usage line, shown by `chat-bridge help` and after a usage error. */
+@@ -10,6 +11,7 @@ interface CommandEntry {
+ /** The commands `chat-bridge` knows, by name. */
+ const commands: Record<string, CommandEntry> = {
+   run: { usage: runUsage, run: runCommand },
++  "mock-margince": { usage: "mock-margince [--port <n>] --secret-env <VAR>", run: mockMargince },
+ };
+ 
+ function usageText(): string {
+diff --git a/chatbridge/src/cli/mock-margince.test.ts b/chatbridge/src/cli/mock-margince.test.ts
+new file mode 100644
+index 0000000..1fcc9a0
+--- /dev/null
++++ b/chatbridge/src/cli/mock-margince.test.ts
+@@ -0,0 +1,138 @@
++import { readFileSync } from "node:fs";
++import { fileURLToPath } from "node:url";
++import { describe, expect, it } from "vitest";
++import type { HttpHandler, HttpRequest } from "../http.ts";
++import { main } from "./main.ts";
++import { testIo } from "./testing.ts";
++
++interface Pair {
++  secret: string;
++  at_ms: number;
++  request: HttpRequest;
++}
++
++function loadPair(name: string): Pair {
++  const file = fileURLToPath(new URL(`../../contract/margince/pairs/${name}.json`, import.meta.url));
++  return JSON.parse(readFileSync(file, "utf8")) as Pair;
++}
++
++const accepted = loadPair("accepted");
++const USAGE_LINE = "chat-bridge mock-margince [--port <n>] --secret-env <VAR>";
++
++/** A `TestIo` whose `listen` records its arguments and resolves at once. */
++function listeningIo(env: Record<string, string | undefined> = { MOCK_SECRET: accepted.secret }, nowMs = accepted.at_ms) {
++  const calls: { host: string; port: number; handler: HttpHandler }[] = [];
++  const io = testIo({
++    env,
++    clock: { now: () => nowMs, sleep: () => Promise.resolve() },
++    listen: (host, port, handler) => {
++      calls.push({ host, port, handler });
++      return Promise.resolve();
++    },
++  });
++  return { io, calls };
++}
++
++describe("chat-bridge mock-margince", () => {
++  it("serves on 127.0.0.1 port 8787 by default, says so on stdout and exits 0", async () => {
++    const { io, calls } = listeningIo();
++    const code = await main(["mock-margince", "--secret-env", "MOCK_SECRET"], io);
++    expect(code).toBe(0);
++    expect(calls).toHaveLength(1);
++    expect(calls[0]?.host).toBe("127.0.0.1");
++    expect(calls[0]?.port).toBe(8787);
++    expect(typeof calls[0]?.handler).toBe("function");
++    expect(io.out.join("")).toBe("listening on http://127.0.0.1:8787\n");
++    expect(io.err).toEqual([]);
++  });
++
++  it("serves on the port given by --port", async () => {
++    const { io, calls } = listeningIo();
++    const code = await main(["mock-margince", "--port", "9000", "--secret-env", "MOCK_SECRET"], io);
++    expect(code).toBe(0);
++    expect(calls[0]?.port).toBe(9000);
++    expect(calls[0]?.host).toBe("127.0.0.1");
++    expect(io.out.join("")).toBe("listening on http://127.0.0.1:9000\n");
++  });
++
++  it("reads the secret from the variable the flag names", async () => {
++    const { io, calls } = listeningIo({ OTHER_NAME: accepted.secret });
++    expect(await main(["mock-margince", "--secret-env", "OTHER_NAME"], io)).toBe(0);
++    expect(calls).toHaveLength(1);
++  });
++
++  it.each([
++    ["unset", {}],
++    ["empty", { MOCK_SECRET: "" }],
++  ])("names the variable on stderr and exits 1 when it is %s", async (_state, env) => {
++    const { io, calls } = listeningIo(env);
++    const code = await main(["mock-margince", "--secret-env", "MOCK_SECRET"], io);
++    expect(code).toBe(1);
++    expect(calls).toEqual([]);
++    expect(io.err.join("")).toContain("MOCK_SECRET");
++    expect(io.out).toEqual([]);
++  });
++
++  it("exits 1 and says why when listen cannot bind", async () => {
++    const { io } = listeningIo();
++    io.listen = () => Promise.reject(new Error("address in use"));
++    const code = await main(["mock-margince", "--secret-env", "MOCK_SECRET"], io);
++    expect(code).toBe(1);
++    expect(io.err.join("")).toContain("address in use");
++    expect(io.out).toEqual([]);
++  });
++
++  it.each([
++    ["no --secret-env", []],
++    ["an empty --secret-env", ["--secret-env", ""]],
++    ["--secret-env without a value", ["--secret-env"]],
++    ["an unknown flag", ["--secret-env", "MOCK_SECRET", "--host", "0.0.0.0"]],
++    ["a stray argument", ["--secret-env", "MOCK_SECRET", "extra"]],
++    ["port 0", ["--secret-env", "MOCK_SECRET", "--port", "0"]],
++    ["port 65536", ["--secret-env", "MOCK_SECRET", "--port", "65536"]],
++    ["a fractional port", ["--secret-env", "MOCK_SECRET", "--port", "80.5"]],
++    ["a negative port", ["--secret-env", "MOCK_SECRET", "--port=-1"]],
++    ["a port that is not a number", ["--secret-env", "MOCK_SECRET", "--port", "abc"]],
++    ["an empty port", ["--secret-env", "MOCK_SECRET", "--port", ""]],
++    ["an exponent port", ["--secret-env", "MOCK_SECRET", "--port", "1e3"]],
++  ])("shows the usage on stderr and exits 2 for %s", async (_what, args) => {
++    const { io, calls } = listeningIo();
++    const code = await main(["mock-margince", ...args], io);
++    expect(code).toBe(2);
++    expect(calls).toEqual([]);
++    expect(io.err.join("")).toContain(USAGE_LINE);
++    expect(io.out).toEqual([]);
++  });
++
++  it.each([1, 65535])("accepts port %i", async (port) => {
++    const { io, calls } = listeningIo();
++    expect(await main(["mock-margince", "--secret-env", "MOCK_SECRET", "--port", String(port)], io)).toBe(0);
++    expect(calls[0]?.port).toBe(port);
++  });
++
++  it("lists itself in the usage of chat-bridge help", async () => {
++    const io = testIo();
++    await main(["help"], io);
++    expect(io.out.join("")).toContain(USAGE_LINE.replace("chat-bridge ", ""));
++  });
++
++  it("passes listen a handler that accepts a batch signed with the secret at the clock's time", async () => {
++    const { io, calls } = listeningIo();
++    await main(["mock-margince", "--secret-env", "MOCK_SECRET"], io);
++    expect(calls[0]?.handler(accepted.request).status).toBe(202);
++  });
++
++  it("passes listen a handler that refuses a batch signed with another secret", async () => {
++    const { io, calls } = listeningIo();
++    await main(["mock-margince", "--secret-env", "MOCK_SECRET"], io);
++    const response = calls[0]?.handler(loadPair("bad-signature").request);
++    expect(response?.status).toBe(401);
++    expect(response?.body).toBe('{"error":"invalid_signature"}');
++  });
++
++  it("builds the handler on the io clock", async () => {
++    const { io, calls } = listeningIo(undefined, accepted.at_ms + 1_000_000);
++    await main(["mock-margince", "--secret-env", "MOCK_SECRET"], io);
++    expect(calls[0]?.handler(accepted.request).status).toBe(401);
++  });
++});
+diff --git a/chatbridge/src/cli/mock-margince.ts b/chatbridge/src/cli/mock-margince.ts
+new file mode 100644
+index 0000000..344be04
+--- /dev/null
++++ b/chatbridge/src/cli/mock-margince.ts
+@@ -0,0 +1,51 @@
++import { parseArgs } from "node:util";
++import { createHandler } from "../mock-margince/handler.ts";
++import type { Command } from "./io.ts";
++
++const USAGE = "usage: chat-bridge mock-margince [--port <n>] --secret-env <VAR>\n";
++const HOST = "127.0.0.1";
++const DEFAULT_PORT = 8787;
++
++/** The port in `text` when it is a whole number from 1 to 65535. */
++function parsePort(text: string): number | undefined {
++  const port = /^[0-9]+$/.test(text) ? Number(text) : Number.NaN;
++  return port >= 1 && port <= 65535 ? port : undefined;
++}
++
++/** Serves the Mock Margince on 127.0.0.1, signed with the secret in the environment variable `--secret-env` names. */
++export const mockMargince: Command = async (args, io) => {
++  let values: { port?: string; "secret-env"?: string };
++  try {
++    ({ values } = parseArgs({
++      args: [...args],
++      options: { port: { type: "string" }, "secret-env": { type: "string" } },
++      strict: true,
++      allowPositionals: false,
++    }));
++  } catch {
++    io.stderr(USAGE);
++    return 2;
++  }
++
++  const secretEnv = values["secret-env"];
++  const port = values.port === undefined ? DEFAULT_PORT : parsePort(values.port);
++  if (secretEnv === undefined || secretEnv === "" || port === undefined) {
++    io.stderr(USAGE);
++    return 2;
++  }
++
++  const secret = io.env[secretEnv];
++  if (secret === undefined || secret === "") {
++    io.stderr(`chat-bridge: environment variable ${secretEnv} is not set or is empty\n`);
++    return 1;
++  }
++
++  try {
++    await io.listen(HOST, port, createHandler({ secret, clock: io.clock }));
++  } catch (error) {
++    io.stderr(`chat-bridge: cannot listen on ${HOST}:${port}: ${error instanceof Error ? error.message : String(error)}\n`);
++    return 1;
++  }
++  io.stdout(`listening on http://${HOST}:${port}\n`);
++  return 0;
++};

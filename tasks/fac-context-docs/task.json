@@ -1,0 +1,19 @@
+{
+  "id": "fac-context-docs",
+  "title": "Accept `context_docs` in the project profile",
+  "product": "factory",
+  "base": "main",
+  "acceptance_criteria": [
+    "Given a profile of version 3 with `\"context_docs\": [\"docs/b.md\", \"docs/a.md\"]`, when it is parsed, then `ContextDocs` is `docs/b.md`, `docs/a.md` in that order",
+    "Given a profile without `context_docs`, when it is parsed, then `ContextDocs` is empty",
+    "Given `\"context_docs\": [\"/etc/passwd\"]`, when the profile is parsed, then parsing fails with an error that contains `context_docs must be a list of relative paths`",
+    "Given `\"context_docs\": [\"../outside.md\"]`, when the profile is parsed, then parsing fails with the same message",
+    "Given `\"context_docs\": \"docs/a.md\"` (a string, not a list), when the profile is parsed, then parsing fails with the same message",
+    "Given a task file with a `context_docs` key, when the profile is applied to it, then it is refused with an error that contains `context_docs belongs in`"
+  ],
+  "touches": ["factory/internal/profile/profile.go", "factory/internal/profile/apply.go", "factory/docs/generic-factory.md"],
+  "source": {"adapter": "bench", "ref": "bench/factory#3"},
+  "max_lanes": 1,
+  "time_limit_s": 3000,
+  "op_limit": 300
+}

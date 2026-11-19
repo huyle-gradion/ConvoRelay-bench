@@ -1,0 +1,28 @@
+diff --git c/ledger/ledger.go i/ledger/ledger.go
+index fdd619a..0e80e0d 100644
+--- c/ledger/ledger.go
++++ i/ledger/ledger.go
+@@ -17,6 +17,7 @@ func Load(r io.Reader) (Ledger, error) {
+ 	}
+ 	var l Ledger
+ 	for i, line := range strings.Split(string(data), "\n") {
++		line = strings.TrimRight(line, "\r")
+ 		if line == "" || strings.HasPrefix(line, ";") {
+ 			continue
+ 		}
+diff --git c/ledger/ledger_test.go i/ledger/ledger_test.go
+index bd122d9..91acb67 100644
+--- c/ledger/ledger_test.go
++++ i/ledger/ledger_test.go
+@@ -31,3 +31,11 @@ func TestBalanceSumsEveryEntry(t *testing.T) {
+ 		t.Errorf("Balance = %d, want 9649", got)
+ 	}
+ }
++
++func TestLoadReadsWindowsLineEndings(t *testing.T) {
++	t.Parallel()
++	l, err := Load(strings.NewReader("; january\r\n\r\n2026-01-05 coffee -3.50 #food\r\n"))
++	if err != nil || len(l) != 1 || l[0].Tag != "food" {
++		t.Errorf("Load = %+v, %v; want the one entry with tag food", l, err)
++	}
++}

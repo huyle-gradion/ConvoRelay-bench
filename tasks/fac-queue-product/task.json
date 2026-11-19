@@ -1,0 +1,18 @@
+{
+  "id": "fac-queue-product",
+  "title": "Let t12-queue start tasks of different products side by side",
+  "product": "factory",
+  "base": "main",
+  "acceptance_criteria": [
+    "Given a run of product `alpha` that has no `touches` and a queued task of product `beta` that has none, when the queue passes, then the task starts",
+    "Given the same run and a queued task of product `alpha` with no `touches`, when the queue passes, then the task waits because its touches overlap the run",
+    "Given two queued tasks, one of product `alpha` and one of product `beta`, both without `touches`, and no runs, when the queue passes with room for both, then both start",
+    "Given a run of product `alpha` with no `touches` and a queued task of product `beta` with `touches` of `src/x`, when the queue passes, then the task starts",
+    "Given a run of product `alpha` and a queued task that names no product and no `touches`, when the queue passes, then the task waits"
+  ],
+  "touches": ["factory/internal/queue/queue.go"],
+  "source": {"adapter": "bench", "ref": "bench/factory#2"},
+  "max_lanes": 1,
+  "time_limit_s": 3000,
+  "op_limit": 300
+}

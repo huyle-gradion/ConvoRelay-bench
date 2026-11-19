@@ -1,0 +1,30 @@
+{
+  "id": "S2-B",
+  "title": "Mock Margince validates signed batches",
+  "product": "chatbridge",
+  "base": "main",
+  "acceptance_criteria": [
+    "Given a batch signed with the shared secret inside the window, when the handler receives it, then it answers with the status, headers and body of `pairs/accepted.json`.",
+    "Given a batch signed with another secret, when the handler receives it, then it answers as `pairs/bad-signature.json`, and also when its timestamp is stale too.",
+    "Given a request missing one of the signing headers, or holding it empty, when the handler receives it, then it answers as `pairs/missing-header.json`, for each of the five headers.",
+    "Given a correctly signed batch 300 seconds old and others 301 seconds old and 301 seconds ahead, when the handler receives them, then the first answers as `pairs/accepted-window-edge.json` and the others as `pairs/stale-timestamp.json` and `pairs/stale-timestamp-future.json`.",
+    "Given a batch accepted once, when the same request arrives again within the window, then the handler answers as `pairs/reused-nonce.json`.",
+    "Given a nonce used by an accepted batch on one slug, when a correctly signed batch with the same nonce arrives for another slug, then the handler answers as `pairs/nonce-per-slug.json`.",
+    "Given a request refused for a bad signature, when a correctly signed batch with the same nonce arrives, then the handler answers as `pairs/nonce-not-burned.json`.",
+    "Given a path that is not the batch endpoint, or the batch path with a method other than POST, when the handler receives it, then it answers as `pairs/not-found.json` and `pairs/not-found-wrong-method.json`."
+  ],
+  "touches": [
+    "chatbridge/src/mock-margince/handler.test.ts",
+    "chatbridge/src/mock-margince/handler.ts"
+  ],
+  "depends_on": [
+    "S2-A"
+  ],
+  "source": {
+    "adapter": "bench",
+    "ref": "bench/chatbridge#6"
+  },
+  "max_lanes": 1,
+  "time_limit_s": 3000,
+  "op_limit": 300
+}

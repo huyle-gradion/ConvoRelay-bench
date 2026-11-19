@@ -1,0 +1,20 @@
+{
+  "id": "tl-tags-order",
+  "title": "Make `tl tags` print in a fixed order",
+  "base": "main",
+  "acceptance_criteria": [
+    "Given the tags a (-1.00), b (-5.00), c (-5.00), d (2.00) and e (0.50) in that order in the file, when `tl tags` runs, then it prints b, c, a, e, d, one `TAG AMOUNT` line each, and prints the same bytes on every run",
+    "Given the tags z and y, both totalling -2.00, and z first in the file, when `tl tags` runs, then y is printed before z on every run",
+    "Given the same entries in the reverse order in the file, when `tl tags` runs, then the output is the same as for the original order"
+  ],
+  "touches": [
+    "ledger/"
+  ],
+  "source": {
+    "adapter": "bench",
+    "ref": "bench/tinyledger#4"
+  },
+  "max_lanes": 1,
+  "time_limit_s": 1800,
+  "op_limit": 200
+}

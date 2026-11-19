@@ -1,0 +1,106 @@
+diff --git a/factory/internal/queue/queue.go b/factory/internal/queue/queue.go
+index 639426c..d46fcf5 100644
+--- a/factory/internal/queue/queue.go
++++ b/factory/internal/queue/queue.go
+@@ -35,6 +35,8 @@ type Run struct {
+ 	Base      string
+ 	Candidate string
+ 	Touches   []string
++	// Product is the product of the run record; "" when it names none.
++	Product string
+ }
+ 
+ // Task is the part of a queued task file the queue reads. Touches is nil when the file's
+@@ -45,6 +47,8 @@ type Task struct {
+ 	Path      string
+ 	Touches   []string
+ 	DependsOn []string
++	// Product is the product the task file names; "" when it names none.
++	Product string
+ }
+ 
+ // Host is what the pass asks of the world: git and the CLI.
+@@ -96,10 +100,20 @@ func Overlaps(a, b []string) bool {
+ 	return false
+ }
+ 
+-// claim is the touches one task holds.
++// claim is the touches one task holds, in its product when it has one.
+ type claim struct {
+ 	id      string
+ 	touches []string
++	product string
++}
++
++// collide says a task and a claim cannot run side by side: two products never collide, and without
++// two products the touches decide.
++func collide(task Task, c claim) bool {
++	if task.Product != "" && c.product != "" && task.Product != c.product {
++		return false
++	}
++	return Overlaps(task.Touches, c.touches)
+ }
+ 
+ // Admit is one pass over the tasks, in the order given (file-name order), over the runs that
+@@ -123,7 +137,7 @@ func Admit(h Host, home string, runs []Run, tasks []Task, maxActive int, out io.
+ 			merged[id] = true
+ 		}
+ 		if run.Phase != "stopped" && !merged[id] {
+-			claims = append(claims, claim{id, run.Touches})
++			claims = append(claims, claim{id, run.Touches, run.Product})
+ 		}
+ 		if run.Phase != "stopped" && run.Phase != "local-verified" {
+ 			active++
+@@ -140,7 +154,7 @@ func Admit(h Host, home string, runs []Run, tasks []Task, maxActive int, out io.
+ 			}
+ 		}
+ 		for _, c := range claims {
+-			if Overlaps(task.Touches, c.touches) {
++			if collide(task, c) {
+ 				clash = append(clash, c.id)
+ 			}
+ 		}
+@@ -161,7 +175,7 @@ func Admit(h Host, home string, runs []Run, tasks []Task, maxActive int, out io.
+ 				continue
+ 			}
+ 			fmt.Fprintf(out, "started %s\n", task.ID)
+-			claims = append(claims, claim{task.ID, task.Touches})
++			claims = append(claims, claim{task.ID, task.Touches, task.Product})
+ 			active++
+ 		}
+ 	}
+@@ -193,6 +207,7 @@ func LoadRuns(home string) ([]Run, error) {
+ 		}
+ 		run := Run{TaskID: id, Phase: phase, Touches: Normalize(rec["touches"])}
+ 		run.Base, _ = rec["base"].(string)
++		run.Product, _ = rec["product"].(string)
+ 		if c, ok := rec["candidate"].(map[string]any); ok {
+ 			run.Candidate, _ = c["commit"].(string)
+ 		}
+@@ -221,6 +236,7 @@ func LoadTasks(dir string) ([]Task, error) {
+ 		if id, ok := rec["id"].(string); ok {
+ 			task.ID = id
+ 		}
++		task.Product, _ = rec["product"].(string)
+ 		if list, ok := rec["depends_on"].([]any); ok {
+ 			for _, d := range list {
+ 				if s, ok := d.(string); ok {
+diff --git a/factory/tests/unit/jobrun/queue_test.go b/factory/tests/unit/jobrun/queue_test.go
+index 5ec29fc..c8201fa 100644
+--- a/factory/tests/unit/jobrun/queue_test.go
++++ b/factory/tests/unit/jobrun/queue_test.go
+@@ -380,3 +380,14 @@ func TestLoadTasksRefusesAFileThatIsNotJSONAndAMissingFolder(t *testing.T) {
+ 		t.Error("a missing queue folder was accepted")
+ 	}
+ }
++
++func TestTasksOfDifferentProductsStartBesideEachOtherWithoutTouches(t *testing.T) {
++	t.Parallel()
++	h := &fakeHost{}
++	a, b := task("alpha-1", nil), task("beta-1", nil)
++	a.Product, b.Product = "alpha", "beta"
++	pass(t, h, nil, []queue.Task{a, b}, 2)
++	if !slices.Equal(h.prepared, []string{"alpha-1", "beta-1"}) {
++		t.Errorf("prepared %v, want both", h.prepared)
++	}
++}

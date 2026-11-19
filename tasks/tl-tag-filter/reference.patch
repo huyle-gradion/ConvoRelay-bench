@@ -1,0 +1,85 @@
+diff --git c/internal/cli/cli.go i/internal/cli/cli.go
+index b9decaf..409ee8d 100644
+--- c/internal/cli/cli.go
++++ i/internal/cli/cli.go
+@@ -10,7 +10,7 @@ import (
+ 	"tinyledger/ledger"
+ )
+ 
+-const usage = "usage: tl balance|list|tags [--file PATH]"
++const usage = "usage: tl balance|list [--tag TAG] | tags [--file PATH]"
+ 
+ // Run runs one tl command and returns its exit code: 0 ok, 1 the ledger could not be read, 2 usage.
+ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+@@ -21,6 +21,10 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+ 	set := flag.NewFlagSet("tl "+args[0], flag.ContinueOnError)
+ 	set.SetOutput(stderr)
+ 	file := set.String("file", "", "ledger file; stdin when empty")
++	var tag *string
++	if args[0] == "balance" || args[0] == "list" {
++		tag = set.String("tag", "", "only the entries with this tag")
++	}
+ 	switch args[0] {
+ 	case "balance", "list", "tags":
+ 	default:
+@@ -50,6 +54,9 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+ 		fmt.Fprintf(stderr, "tl: %v\n", err)
+ 		return 1
+ 	}
++	if tag != nil && *tag != "" {
++		l = l.ByTag(*tag)
++	}
+ 	switch args[0] {
+ 	case "balance":
+ 		fmt.Fprintln(stdout, ledger.FormatCents(l.Balance()))
+diff --git c/internal/cli/cli_test.go i/internal/cli/cli_test.go
+index f9b94d6..6ec43b6 100644
+--- c/internal/cli/cli_test.go
++++ i/internal/cli/cli_test.go
+@@ -44,3 +44,10 @@ func TestAnUnknownCommandPrintsUsageAndExitsTwo(t *testing.T) {
+ 		t.Errorf("= %d %q, want exit 2 and the usage", code, errOut)
+ 	}
+ }
++
++func TestBalanceTagSumsOnlyThatTag(t *testing.T) {
++	t.Parallel()
++	if code, out, _ := run(t, sample, "balance", "--tag", "food"); code != 0 || out != "-3.50\n" {
++		t.Errorf("balance --tag food = %d %q, want 0 \"-3.50\\n\"", code, out)
++	}
++}
+diff --git c/ledger/ledger.go i/ledger/ledger.go
+index fdd619a..424a045 100644
+--- c/ledger/ledger.go
++++ i/ledger/ledger.go
+@@ -37,3 +37,14 @@ func (l Ledger) Balance() int64 {
+ 	}
+ 	return total
+ }
++
++// ByTag is the entries tagged tag, in file order. A tag matches exactly, case included.
++func (l Ledger) ByTag(tag string) Ledger {
++	var out Ledger
++	for _, e := range l {
++		if e.Tag == tag {
++			out = append(out, e)
++		}
++	}
++	return out
++}
+diff --git c/ledger/ledger_test.go i/ledger/ledger_test.go
+index bd122d9..21d8f20 100644
+--- c/ledger/ledger_test.go
++++ i/ledger/ledger_test.go
+@@ -31,3 +31,12 @@ func TestBalanceSumsEveryEntry(t *testing.T) {
+ 		t.Errorf("Balance = %d, want 9649", got)
+ 	}
+ }
++
++func TestByTagKeepsOnlyExactMatchesInFileOrder(t *testing.T) {
++	t.Parallel()
++	l := Ledger{{Desc: "a", Tag: "food"}, {Desc: "b", Tag: "Food"}, {Desc: "c", Tag: "food"}, {Desc: "d"}}
++	got := l.ByTag("food")
++	if len(got) != 2 || got[0].Desc != "a" || got[1].Desc != "c" {
++		t.Errorf("ByTag(food) = %+v, want a and c", got)
++	}
++}

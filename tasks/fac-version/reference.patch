@@ -1,0 +1,68 @@
+diff --git c/factory/internal/cli/cli.go i/factory/internal/cli/cli.go
+index d0f3c6c..7070fc1 100644
+--- c/factory/internal/cli/cli.go
++++ i/factory/internal/cli/cli.go
+@@ -80,6 +80,7 @@ var commands = map[string]command{
+ 	"tdd-step":      {"--home DIR --task-id ID [--unit UNIT]", cmdTddStep},
+ 	"review":        {"--home DIR --task-id ID --role ROLE --session ID --verdict approve|changes-requested|human-gated --report FILE", cmdReview},
+ 	"qc":            {"--home DIR --task-id ID", cmdQC},
++	"version":       {"", cmdVersion},
+ 	"check":         {"--home DIR --task-id ID", cmdCheck},
+ 	"manifest":      {"--home DIR --task-id ID [--out FILE]", cmdManifest},
+ 	"deliver":       {"--home DIR --task-id ID --adapter github|gitlab|bitbucket|asana --report FILE [--resolves]", cmdDeliver},
+@@ -97,6 +98,9 @@ var commands = map[string]command{
+ 
+ // Main runs one t12 command and returns its exit code: 0 ok, 1 refused or failed, 2 usage.
+ func Main(args []string, stdout, stderr io.Writer, deps Deps) int {
++	if len(args) > 0 && args[0] == "--version" {
++		args = append([]string{"version"}, args[1:]...)
++	}
+ 	if len(args) == 0 || commands[args[0]].run == nil {
+ 		names := make([]string, 0, len(commands))
+ 		for name := range commands {
+diff --git c/factory/internal/cli/version.go i/factory/internal/cli/version.go
+new file mode 100644
+index 0000000..2096fee
+--- /dev/null
++++ i/factory/internal/cli/version.go
+@@ -0,0 +1,21 @@
++package cli
++
++import (
++	"flag"
++	"fmt"
++)
++
++// Version is the release `t12 version` prints.
++const Version = "0.3.0-dev"
++
++func cmdVersion(e env, set *flag.FlagSet, args []string) error {
++	if err := parse(set, args); err != nil {
++		return err
++	}
++	if set.NArg() > 0 {
++		set.Usage()
++		return errUsage
++	}
++	fmt.Fprintf(e.stdout, "t12 %s\n", Version)
++	return nil
++}
+diff --git c/factory/tests/unit/version_test.go i/factory/tests/unit/version_test.go
+new file mode 100644
+index 0000000..b732c31
+--- /dev/null
++++ i/factory/tests/unit/version_test.go
+@@ -0,0 +1,13 @@
++package unit
++
++import "testing"
++
++func TestVersionPrintsTheReleaseUnderBothSpellings(t *testing.T) {
++	t.Parallel()
++	for _, args := range [][]string{{"version"}, {"--version"}} {
++		code, stdout, stderr := t12(newFakeGit(""), args...)
++		if code != 0 || stdout != "t12 0.3.0-dev\n" || stderr != "" {
++			t.Errorf("t12 %v = %d %q %q, want 0 \"t12 0.3.0-dev\\n\" \"\"", args, code, stdout, stderr)
++		}
++	}
++}

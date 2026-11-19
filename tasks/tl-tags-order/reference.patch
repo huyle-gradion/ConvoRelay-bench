@@ -1,0 +1,57 @@
+diff --git c/ledger/report.go i/ledger/report.go
+index e321771..5a008c6 100644
+--- c/ledger/report.go
++++ i/ledger/report.go
+@@ -2,6 +2,7 @@ package ledger
+ 
+ import (
+ 	"fmt"
++	"sort"
+ 	"strings"
+ )
+ 
+@@ -16,11 +17,23 @@ func (l Ledger) TagTotals() map[string]int64 {
+ 	return totals
+ }
+ 
+-// TagReport is one "tag amount" line per tag.
++// TagReport is one "tag amount" line per tag, the smallest total first and equal totals by tag name.
+ func (l Ledger) TagReport() string {
++	totals := l.TagTotals()
++	tags := make([]string, 0, len(totals))
++	for tag := range totals {
++		tags = append(tags, tag)
++	}
++	sort.Slice(tags, func(i, j int) bool {
++		a, b := tags[i], tags[j]
++		if totals[a] != totals[b] {
++			return totals[a] < totals[b]
++		}
++		return a < b
++	})
+ 	var b strings.Builder
+-	for tag, cents := range l.TagTotals() {
+-		fmt.Fprintf(&b, "%s %s\n", tag, FormatCents(cents))
++	for _, tag := range tags {
++		fmt.Fprintf(&b, "%s %s\n", tag, FormatCents(totals[tag]))
+ 	}
+ 	return b.String()
+ }
+diff --git c/ledger/report_test.go i/ledger/report_test.go
+index 70f0e30..41fd838 100644
+--- c/ledger/report_test.go
++++ i/ledger/report_test.go
+@@ -26,3 +26,13 @@ func TestTagReportWithOneTag(t *testing.T) {
+ 		t.Errorf("TagReport = %q", got)
+ 	}
+ }
++
++func TestTagReportIsSortedByTotalThenName(t *testing.T) {
++	t.Parallel()
++	l := Ledger{{Cents: 200, Tag: "z"}, {Cents: -500, Tag: "y"}, {Cents: -500, Tag: "x"}}
++	for i := 0; i < 20; i++ {
++		if got := l.TagReport(); got != "x -5.00\ny -5.00\nz 2.00\n" {
++			t.Fatalf("TagReport = %q", got)
++		}
++	}
++}

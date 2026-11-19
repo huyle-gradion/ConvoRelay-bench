@@ -1,0 +1,17 @@
+{
+  "version": 3,
+  "name": "tinyledger",
+  "protected_paths": [".t12"],
+  "tiers": {
+    "unit": {
+      "command": ["go", "test", "-count=1", "./..."],
+      "globs": ["**/*_test.go"]
+    }
+  },
+  "test_build_command": ["go", "test", "-count=1", "-run", "^$", "./..."],
+  "test_report": "go-json",
+  "assertion_pattern": "^\\s+\\S+_test\\.go:\\d+: ",
+  "not_red_pattern": "\\[build failed\\]|^panic:",
+  "lint_command": ["go", "vet", "./..."],
+  "static": [{"name": "build", "command": ["go", "build", "-buildvcs=false", "./..."]}]
+}

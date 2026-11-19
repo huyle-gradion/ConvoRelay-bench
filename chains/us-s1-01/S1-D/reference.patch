@@ -1,0 +1,210 @@
+diff --git a/chatbridge/src/cli/main.ts b/chatbridge/src/cli/main.ts
+index 3f726d7..471e9a4 100644
+--- a/chatbridge/src/cli/main.ts
++++ b/chatbridge/src/cli/main.ts
+@@ -1,4 +1,5 @@
+ import type { Command, Io } from "./io.ts";
++import { runCommand, runUsage } from "./run.ts";
+ 
+ interface CommandEntry {
+   /** One usage line, shown by `chat-bridge help` and after a usage error. */
+@@ -7,7 +8,9 @@ interface CommandEntry {
+ }
+ 
+ /** The commands `chat-bridge` knows, by name. */
+-const commands: Record<string, CommandEntry> = {};
++const commands: Record<string, CommandEntry> = {
++  run: { usage: runUsage, run: runCommand },
++};
+ 
+ function usageText(): string {
+   const lines = ["usage: chat-bridge <command> [options]", "", "commands:"];
+diff --git a/chatbridge/src/cli/run.test.ts b/chatbridge/src/cli/run.test.ts
+new file mode 100644
+index 0000000..82655c4
+--- /dev/null
++++ b/chatbridge/src/cli/run.test.ts
+@@ -0,0 +1,112 @@
++import { describe, expect, it } from "vitest";
++import { main } from "./main.ts";
++import { runUsage } from "./run.ts";
++import { testIo } from "./testing.ts";
++
++const row = (at_ms: number, text: string) =>
++  JSON.stringify({ at_ms, kind: "message", chat: { id: "c1", type: "direct" }, sender: "A", text });
++
++const threeEvents = [row(0, "one"), row(1000, "two"), row(3000, "three")].join("\n");
++
++function setup(files: Record<string, string> = { "fixture.jsonl": threeEvents }) {
++  const waits: number[] = [];
++  const io = testIo({
++    readFile: (path) => {
++      const text = files[path];
++      return text === undefined ? Promise.reject(new Error(`ENOENT: no such file, open '${path}'`)) : Promise.resolve(text);
++    },
++    clock: {
++      now: () => 0,
++      sleep: (ms) => {
++        waits.push(ms);
++        return Promise.resolve();
++      },
++    },
++  });
++  return { io, waits };
++}
++
++describe("run --fake", () => {
++  it("prints one JSON line per event, in fixture order, and exits 0", async () => {
++    const { io } = setup();
++    const code = await main(["run", "--fake", "fixture.jsonl", "--speed", "0"], io);
++    expect(code).toBe(0);
++    const lines = io.out.join("").split("\n");
++    expect(lines.pop()).toBe("");
++    expect(lines.map((l) => JSON.parse(l).id)).toEqual(["fake:1", "fake:2", "fake:3"]);
++    expect(lines[0]).toBe(
++      '{"id":"fake:1","time":"2026-01-01T00:00:00.000Z","kind":"message","chat":{"id":"c1","type":"direct"},"sender":"A","text":"one"}',
++    );
++    expect(io.err).toEqual([]);
++  });
++
++  it("prints byte for byte the same on a second run", async () => {
++    const first = setup();
++    const second = setup();
++    await main(["run", "--fake", "fixture.jsonl", "--speed", "0"], first.io);
++    await main(["run", "--fake", "fixture.jsonl", "--speed", "0"], second.io);
++    expect(second.io.out.join("")).toBe(first.io.out.join(""));
++  });
++
++  it("waits through the clock at the default speed and not at speed 0", async () => {
++    const real = setup();
++    await main(["run", "--fake", "fixture.jsonl"], real.io);
++    expect(real.waits).toEqual([0, 1000, 2000]);
++    const fast = setup();
++    await main(["run", "--fake", "fixture.jsonl", "--speed", "10"], fast.io);
++    expect(fast.waits).toEqual([0, 100, 200]);
++    const none = setup();
++    await main(["run", "--fake", "fixture.jsonl", "--speed", "0"], none.io);
++    expect(none.waits).toEqual([]);
++  });
++
++  it("prints nothing and exits 1 naming the line when a later line is invalid", async () => {
++    const { io } = setup({ "bad.jsonl": [row(0, "one"), row(1, "two"), "{oops"].join("\n") });
++    const code = await main(["run", "--fake", "bad.jsonl", "--speed", "0"], io);
++    expect(code).toBe(1);
++    expect(io.out).toEqual([]);
++    expect(io.err.join("")).toContain("line 3");
++  });
++
++  it("names the path and exits 1 when the file cannot be read", async () => {
++    const { io } = setup();
++    const code = await main(["run", "--fake", "missing.jsonl"], io);
++    expect(code).toBe(1);
++    expect(io.err.join("")).toContain("missing.jsonl");
++    expect(io.out).toEqual([]);
++  });
++
++  it.each([
++    ["no --fake", ["run"]],
++    ["--fake without a value", ["run", "--fake"]],
++    ["--speed abc", ["run", "--fake", "fixture.jsonl", "--speed", "abc"]],
++    ["a negative --speed", ["run", "--fake", "fixture.jsonl", "--speed", "-1"]],
++    ["an infinite --speed", ["run", "--fake", "fixture.jsonl", "--speed", "Infinity"]],
++    ["an empty --speed", ["run", "--fake", "fixture.jsonl", "--speed", ""]],
++    ["--base-time abc", ["run", "--fake", "fixture.jsonl", "--base-time", "abc"]],
++    ["an unknown option", ["run", "--fake", "fixture.jsonl", "--loud", "1"]],
++  ])("shows the usage on stderr and exits 2 for %s", async (_name, argv) => {
++    const { io, waits } = setup();
++    const code = await main(argv, io);
++    expect(code).toBe(2);
++    expect(io.err.join("")).toContain(runUsage);
++    expect(io.out).toEqual([]);
++    expect(waits).toEqual([]);
++  });
++
++  it("starts the times at the given base time", async () => {
++    const { io } = setup();
++    const code = await main(
++      ["run", "--fake", "fixture.jsonl", "--base-time", "2030-05-06T07:08:09Z", "--speed", "0"],
++      io,
++    );
++    expect(code).toBe(0);
++    expect(JSON.parse(io.out[0] ?? "{}").time).toBe("2030-05-06T07:08:09.000Z");
++  });
++
++  it("is listed by help", async () => {
++    const io = testIo();
++    await main(["help"], io);
++    expect(io.out.join("")).toContain(`  ${runUsage}\n`);
++  });
++});
+diff --git a/chatbridge/src/cli/run.ts b/chatbridge/src/cli/run.ts
+new file mode 100644
+index 0000000..3f06555
+--- /dev/null
++++ b/chatbridge/src/cli/run.ts
+@@ -0,0 +1,65 @@
++import { loadFixture } from "../fake/fixture.ts";
++import { replay } from "../fake/replay.ts";
++import type { Command } from "./io.ts";
++
++export const runUsage = "run --fake <file> [--speed <number>] [--base-time <iso>]";
++
++interface RunOptions {
++  file: string;
++  speed: number;
++  baseTime: string;
++}
++
++/** Reads the arguments of `run`; undefined when they are not valid. */
++function parseArgs(args: readonly string[]): RunOptions | undefined {
++  let file: string | undefined;
++  let speed = 1;
++  let baseTime = "2026-01-01T00:00:00Z";
++  for (let i = 0; i < args.length; i += 2) {
++    const flag = args[i];
++    const value = args[i + 1];
++    if (value === undefined) return undefined;
++    if (flag === "--fake") {
++      file = value;
++    } else if (flag === "--speed") {
++      speed = value.trim() === "" ? Number.NaN : Number(value);
++      if (!Number.isFinite(speed) || speed < 0) return undefined;
++    } else if (flag === "--base-time") {
++      if (Number.isNaN(Date.parse(value))) return undefined;
++      baseTime = value;
++    } else {
++      return undefined;
++    }
++  }
++  return file === undefined ? undefined : { file, speed, baseTime };
++}
++
++/** `chat-bridge run --fake <file>`: replays a Fake Source fixture, one JSON line per event on stdout. */
++export const runCommand: Command = async (args, io) => {
++  const options = parseArgs(args);
++  if (options === undefined) {
++    io.stderr(`usage: chat-bridge ${runUsage}\n`);
++    return 2;
++  }
++
++  let text: string;
++  try {
++    text = await io.readFile(options.file);
++  } catch (error) {
++    io.stderr(`chat-bridge: cannot read ${options.file}: ${error instanceof Error ? error.message : String(error)}\n`);
++    return 1;
++  }
++
++  let events;
++  try {
++    events = loadFixture(text);
++  } catch (error) {
++    io.stderr(`chat-bridge: ${options.file}: ${error instanceof Error ? error.message : String(error)}\n`);
++    return 1;
++  }
++
++  for await (const event of replay(events, { speed: options.speed, baseTime: options.baseTime, clock: io.clock })) {
++    io.stdout(`${JSON.stringify(event)}\n`);
++  }
++  return 0;
++};

@@ -1,0 +1,352 @@
+diff --git a/chatbridge/src/mock-margince/handler.ts b/chatbridge/src/mock-margince/handler.ts
+index 9266027..f1fbefd 100644
+--- a/chatbridge/src/mock-margince/handler.ts
++++ b/chatbridge/src/mock-margince/handler.ts
+@@ -1,6 +1,7 @@
+ import type { Clock } from "../clock.ts";
+ import type { HttpHandler, HttpRequest, HttpResponse } from "../http.ts";
+ import { verifyReceived } from "../margince/signature.ts";
++import { createRateLimiter } from "./ratelimit.ts";
+ 
+ const ENDPOINT = /^\/v1\/workspaces\/([a-z0-9]+(?:-[a-z0-9]+)*)\/batches$/;
+ const MAX_SLUG_LENGTH = 63;
+@@ -9,8 +10,12 @@ const SIGNATURE_PREFIX = "sha256=";
+ 
+ const accepted: HttpResponse = { status: 202, headers: {}, body: "" };
+ 
+-function refusal(status: number, error: string): HttpResponse {
+-  return { status, headers: { "content-type": "application/json" }, body: JSON.stringify({ error }) };
++function refusal(status: number, error: string, headers: Record<string, string> = {}): HttpResponse {
++  return {
++    status,
++    headers: { "content-type": "application/json", ...headers },
++    body: JSON.stringify({ error }),
++  };
+ }
+ 
+ /** The workspace slug of a batch push, or undefined when the request is not one. */
+@@ -28,11 +33,12 @@ function insideWindow(timestamp: string, nowSeconds: number): boolean {
+ 
+ /**
+  * The Mock Margince: answers a signed batch push exactly as `contract/margince/signing.md` says.
+- * Nonces live in this handler's memory only.
++ * Nonces and rate-limit counters live in this handler's memory only.
+  */
+ export function createHandler({ secret, clock }: { secret: string; clock: Pick<Clock, "now"> }): HttpHandler {
+   /** `slug\nnonce` -> the second after which the accepted request that used it is outside its window. */
+   const nonces = new Map<string, number>();
++  const limiter = createRateLimiter();
+ 
+   return (request) => {
+     const slug = routeSlug(request);
+@@ -40,6 +46,11 @@ export function createHandler({ secret, clock }: { secret: string; clock: Pick<C
+       return refusal(404, "not_found");
+     }
+ 
++    const retryAfter = limiter.admit(request.ip, clock.now());
++    if (retryAfter !== undefined) {
++      return refusal(429, "rate_limited", { "retry-after": String(retryAfter) });
++    }
++
+     const scope = request.headers["x-margince-scope"];
+     const ref = request.headers["x-margince-ref"];
+     const timestamp = request.headers["x-margince-timestamp"];
+diff --git a/chatbridge/src/mock-margince/ratelimit.test.ts b/chatbridge/src/mock-margince/ratelimit.test.ts
+new file mode 100644
+index 0000000..b95c80f
+--- /dev/null
++++ b/chatbridge/src/mock-margince/ratelimit.test.ts
+@@ -0,0 +1,249 @@
++import { readdirSync, readFileSync } from "node:fs";
++import { fileURLToPath } from "node:url";
++import { describe, expect, it } from "vitest";
++import type { HttpRequest, HttpResponse } from "../http.ts";
++import { sign } from "../margince/signature.ts";
++import { createHandler } from "./handler.ts";
++import { createRateLimiter, ENDPOINT_LIMIT, IP_LIMIT } from "./ratelimit.ts";
++
++interface Pair {
++  name: string;
++  secret: string;
++  preceding: { at_ms: number; request: HttpRequest }[];
++  at_ms: number;
++  request: HttpRequest;
++  response: HttpResponse;
++}
++
++const pairsDir = fileURLToPath(new URL("../../contract/margince/pairs/", import.meta.url));
++const pairs = readdirSync(pairsDir)
++  .filter((file) => file.endsWith(".json"))
++  .sort()
++  .map((file) => JSON.parse(readFileSync(`${pairsDir}/${file}`, "utf8")) as Pair);
++
++function pairNamed(name: string): Pair {
++  const pair = pairs.find((candidate) => candidate.name === name);
++  if (pair === undefined) {
++    throw new Error(`no pair named ${name}`);
++  }
++  return pair;
++}
++
++/** Sends the pair's earlier steps and then its request to a fresh handler on the recorded clock. */
++function replay(pair: Pair): HttpResponse {
++  let now = 0;
++  const handler = createHandler({ secret: pair.secret, clock: { now: () => now } });
++  for (const step of pair.preceding) {
++    now = step.at_ms;
++    handler(step.request);
++  }
++  now = pair.at_ms;
++  return handler(pair.request);
++}
++
++const MINUTE = 60_000;
++const START = pairNamed("accepted").at_ms - (pairNamed("accepted").at_ms % MINUTE);
++const SECRET = pairNamed("accepted").secret;
++
++let nonceCounter = 0;
++
++/** A batch signed with `SECRET` for the second `timestampMs` falls in, from `ip`. */
++function batch(ip: string, timestampMs: number, nonce = `nonce-${(nonceCounter += 1)}`): HttpRequest {
++  const parts = {
++    scope: "messages:write",
++    slug: "acme-sales",
++    ref: "batch-0001",
++    timestamp: Math.floor(timestampMs / 1000),
++    nonce,
++    body: "{}",
++  };
++  return {
++    method: "POST",
++    path: "/v1/workspaces/acme-sales/batches",
++    headers: {
++      "x-margince-scope": parts.scope,
++      "x-margince-ref": parts.ref,
++      "x-margince-timestamp": String(parts.timestamp),
++      "x-margince-nonce": nonce,
++      "x-margince-signature": `sha256=${sign(SECRET, parts)}`,
++    },
++    body: parts.body,
++    ip,
++  };
++}
++
++describe("createRateLimiter", () => {
++  it("allows 60 requests a minute from one IP and refuses the 61st", () => {
++    const limiter = createRateLimiter();
++    for (let i = 0; i < IP_LIMIT; i += 1) {
++      expect(limiter.admit("10.0.0.1", START + i)).toBeUndefined();
++    }
++    expect(limiter.admit("10.0.0.1", START + 100)).toBeDefined();
++  });
++
++  it("keeps a count per IP string", () => {
++    const limiter = createRateLimiter();
++    for (let i = 0; i < IP_LIMIT; i += 1) {
++      limiter.admit("10.0.0.1", START);
++    }
++    expect(limiter.admit("10.0.0.2", START)).toBeUndefined();
++    expect(limiter.admit("10.0.0.1", START)).toBeDefined();
++  });
++
++  it("allows 120 requests a minute to the endpoint across IPs and refuses the 121st", () => {
++    const limiter = createRateLimiter();
++    for (let i = 0; i < ENDPOINT_LIMIT; i += 1) {
++      expect(limiter.admit(`10.0.0.${i % 3}`, START)).toBeUndefined();
++    }
++    expect(limiter.admit("10.0.0.9", START)).toBeDefined();
++  });
++
++  it("counts nothing for a refused request", () => {
++    const limiter = createRateLimiter();
++    for (let i = 0; i < IP_LIMIT; i += 1) {
++      limiter.admit("10.0.0.1", START);
++    }
++    for (let i = 0; i < ENDPOINT_LIMIT; i += 1) {
++      expect(limiter.admit("10.0.0.1", START)).toBeDefined();
++    }
++    // Had the refusals counted, the endpoint would be full and another IP refused.
++    expect(limiter.admit("10.0.0.2", START)).toBeUndefined();
++  });
++
++  it("starts a new window at the next clock minute and forgets the earlier counters", () => {
++    const limiter = createRateLimiter();
++    for (let i = 0; i < IP_LIMIT; i += 1) {
++      limiter.admit("10.0.0.1", START + MINUTE - 1);
++    }
++    expect(limiter.admit("10.0.0.1", START + MINUTE - 1)).toBeDefined();
++    expect(limiter.admit("10.0.0.1", START + MINUTE)).toBeUndefined();
++  });
++
++  it.each([
++    [0, 60],
++    [999, 60],
++    [1000, 59],
++    [41_000, 19],
++    [59_000, 1],
++    [59_999, 1],
++  ])("answers retry-after for %i ms into the minute as %i", (offset, expected) => {
++    const limiter = createRateLimiter();
++    for (let i = 0; i < IP_LIMIT; i += 1) {
++      limiter.admit("10.0.0.1", START + offset);
++    }
++    expect(limiter.admit("10.0.0.1", START + offset)).toBe(expected);
++  });
++});
++
++describe("createHandler rate limit", () => {
++  function saturated(ip = "203.0.113.7") {
++    let now = START;
++    const handler = createHandler({ secret: SECRET, clock: { now: () => now } });
++    for (let i = 0; i < IP_LIMIT; i += 1) {
++      handler(batch(ip, now));
++    }
++    return {
++      handler,
++      at: (ms: number) => {
++        now = ms;
++      },
++    };
++  }
++
++  it.each(["rate-limited", "rate-limited-counts-bad-requests", "rate-limited-endpoint", "rate-limit-window-resets"])(
++    "answers %s as recorded",
++    (name) => {
++      const pair = pairNamed(name);
++      const response = replay(pair);
++      expect(response.status).toBe(pair.response.status);
++      expect(response.body).toBe(pair.response.body);
++      expect(response.headers).toEqual(pair.response.headers);
++    },
++  );
++
++  it("answers 429 with retry-after to the 61st request in a minute", () => {
++    const { handler, at } = saturated();
++    at(START + 41_000);
++    const response = handler(batch("203.0.113.7", START + 41_000));
++    expect(response).toEqual({
++      status: 429,
++      headers: { "content-type": "application/json", "retry-after": "19" },
++      body: '{"error":"rate_limited"}',
++    });
++  });
++
++  it("does not remember the nonce of a request refused as rate limited", () => {
++    const { handler, at } = saturated();
++    const request = batch("203.0.113.7", START + 30_000, "retried-nonce");
++    at(START + 30_000);
++    expect(handler(request).status).toBe(429);
++    at(START + MINUTE);
++    expect(handler(request).status).toBe(202);
++  });
++
++  it("counts requests refused for a missing header, a bad signature, a stale timestamp or a reused nonce", () => {
++    let now = START;
++    const handler = createHandler({ secret: SECRET, clock: { now: () => now } });
++    const ip = "203.0.113.8";
++    const good = batch(ip, now);
++    handler(good);
++    const refused = [
++      { ...good, headers: { ...good.headers, "x-margince-nonce": "" } },
++      { ...good, headers: { ...good.headers, "x-margince-signature": `sha256=${"0".repeat(64)}` } },
++      batch(ip, now - 301_000),
++      good,
++    ];
++    for (let i = 1; i < IP_LIMIT; i += 1) {
++      expect(handler(refused[i % refused.length] as HttpRequest).status).toBeLessThan(429);
++    }
++    now += 1;
++    expect(handler(batch(ip, now)).status).toBe(429);
++  });
++
++  it("counts nothing for a request answered 404", () => {
++    let now = START;
++    const handler = createHandler({ secret: SECRET, clock: { now: () => now } });
++    const valid = batch("203.0.113.9", now);
++    for (let i = 0; i < ENDPOINT_LIMIT; i += 1) {
++      expect(handler({ ...valid, path: "/v1/nothing" }).status).toBe(404);
++      expect(handler({ ...valid, method: "GET" }).status).toBe(404);
++    }
++    now += 1;
++    expect(handler(valid).status).toBe(202);
++  });
++
++  it("shares the endpoint limit between IPs", () => {
++    const now = START;
++    const handler = createHandler({ secret: SECRET, clock: { now: () => now } });
++    for (let i = 0; i < ENDPOINT_LIMIT; i += 1) {
++      handler(batch(`198.51.100.${i % 4}`, now));
++    }
++    expect(handler(batch("198.51.100.77", now)).status).toBe(429);
++  });
++});
++
++describe("every recorded pair", () => {
++  it("lists the pairs of the contract folder", () => {
++    expect(pairs.length).toBeGreaterThanOrEqual(15);
++  });
++
++  it("is answered with the pair's status", () => {
++    const mismatches = pairs.filter((pair) => replay(pair).status !== pair.response.status).map((pair) => pair.name);
++    expect(mismatches).toEqual([]);
++  });
++
++  it("is answered with the pair's body bytes", () => {
++    const mismatches = pairs.filter((pair) => replay(pair).body !== pair.response.body).map((pair) => pair.name);
++    expect(mismatches).toEqual([]);
++  });
++
++  it("is answered with the value of every header the pair lists", () => {
++    const mismatches = pairs
++      .filter((pair) => {
++        const { headers } = replay(pair);
++        return Object.entries(pair.response.headers).some(([name, value]) => headers[name] !== value);
++      })
++      .map((pair) => pair.name);
++    expect(mismatches).toEqual([]);
++  });
++});
+diff --git a/chatbridge/src/mock-margince/ratelimit.ts b/chatbridge/src/mock-margince/ratelimit.ts
+new file mode 100644
+index 0000000..735cad2
+--- /dev/null
++++ b/chatbridge/src/mock-margince/ratelimit.ts
+@@ -0,0 +1,38 @@
++const WINDOW_MS = 60_000;
++
++/** Requests per window allowed from one IP string, and to the endpoint as a whole (`contract/margince/signing.md`). */
++export const IP_LIMIT = 60;
++export const ENDPOINT_LIMIT = 120;
++
++export interface RateLimiter {
++  /**
++   * Counts a request that passed the route check. Returns undefined when it is allowed (it then counts
++   * toward both limits), or the `retry-after` seconds, from 1 to 60, when it is refused (nothing is counted).
++   */
++  admit(ip: string, nowMs: number): number | undefined;
++}
++
++/** Two fixed windows aligned to the clock minute; counters of an earlier window are discarded. */
++export function createRateLimiter(): RateLimiter {
++  let window = Number.NaN;
++  let endpointCount = 0;
++  const ipCounts = new Map<string, number>();
++
++  return {
++    admit(ip, nowMs) {
++      const current = Math.floor(nowMs / WINDOW_MS);
++      if (current !== window) {
++        window = current;
++        endpointCount = 0;
++        ipCounts.clear();
++      }
++      const ipCount = ipCounts.get(ip) ?? 0;
++      if (ipCount >= IP_LIMIT || endpointCount >= ENDPOINT_LIMIT) {
++        return 60 - (Math.floor(nowMs / 1000) % 60);
++      }
++      ipCounts.set(ip, ipCount + 1);
++      endpointCount += 1;
++      return undefined;
++    },
++  };
++}

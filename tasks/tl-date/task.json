@@ -1,0 +1,20 @@
+{
+  "id": "tl-date",
+  "title": "Refuse entries whose date does not exist",
+  "base": "main",
+  "acceptance_criteria": [
+    "Given an entry line dated `2026-02-30`, `2026-04-31`, `2026-13-01` or `2026-00-10`, when it is parsed, then parsing fails and the error contains the word `date`",
+    "Given an entry line dated `2024-02-29` (a leap day) or `2026-12-31`, when it is parsed, then it is accepted, and given `2026-02-29` it fails",
+    "Given a ledger whose second line has the date `2026-02-30`, when it is loaded, then the error names `line 2` and contains the word `date`"
+  ],
+  "touches": [
+    "ledger/"
+  ],
+  "source": {
+    "adapter": "bench",
+    "ref": "bench/tinyledger#2"
+  },
+  "max_lanes": 1,
+  "time_limit_s": 1800,
+  "op_limit": 200
+}

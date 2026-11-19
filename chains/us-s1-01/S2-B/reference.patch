@@ -1,0 +1,364 @@
+diff --git a/chatbridge/src/mock-margince/handler.test.ts b/chatbridge/src/mock-margince/handler.test.ts
+new file mode 100644
+index 0000000..23b7680
+--- /dev/null
++++ b/chatbridge/src/mock-margince/handler.test.ts
+@@ -0,0 +1,276 @@
++import { createHash, createHmac } from "node:crypto";
++import { readFileSync } from "node:fs";
++import { fileURLToPath } from "node:url";
++import { describe, expect, it } from "vitest";
++import type { HttpRequest, HttpResponse } from "../http.ts";
++import { sign } from "../margince/signature.ts";
++import { createHandler } from "./handler.ts";
++
++interface Pair {
++  secret: string;
++  preceding: { at_ms: number; request: HttpRequest }[];
++  at_ms: number;
++  request: HttpRequest;
++  response: HttpResponse;
++}
++
++const pairsDir = new URL("../../contract/margince/pairs/", import.meta.url);
++
++function loadPair(name: string): Pair {
++  return JSON.parse(readFileSync(fileURLToPath(new URL(`${name}.json`, pairsDir)), "utf8")) as Pair;
++}
++
++/** A clock a test moves by hand. */
++function fakeClock(start = 0) {
++  let now = start;
++  return {
++    now: () => now,
++    set: (ms: number) => {
++      now = ms;
++    },
++  };
++}
++
++/** Sends the pair's earlier steps and then its request to a fresh handler on the recorded clock. */
++function replay(pair: Pair): HttpResponse {
++  const clock = fakeClock();
++  const handler = createHandler({ secret: pair.secret, clock });
++  for (const step of pair.preceding) {
++    clock.set(step.at_ms);
++    handler(step.request);
++  }
++  clock.set(pair.at_ms);
++  return handler(pair.request);
++}
++
++/** The status, the body bytes and every header the pair lists. */
++function answer(response: HttpResponse, listed: HttpResponse) {
++  return {
++    status: response.status,
++    body: response.body,
++    headers: Object.fromEntries(Object.keys(listed.headers).map((name) => [name, response.headers[name]])),
++  };
++}
++
++const accepted = loadPair("accepted");
++const SECRET = accepted.secret;
++const NOW_SECONDS = accepted.at_ms / 1000;
++const SIGNING_HEADERS = [
++  "x-margince-scope",
++  "x-margince-ref",
++  "x-margince-timestamp",
++  "x-margince-nonce",
++  "x-margince-signature",
++];
++
++let nonceCounter = 0;
++
++/** A batch signed with `secret`; every field can be overridden. */
++function batch(
++  options: { secret?: string; slug?: string; timestamp?: number; nonce?: string; body?: string } = {},
++): HttpRequest {
++  const slug = options.slug ?? "acme-sales";
++  const parts = {
++    scope: "messages:write",
++    slug,
++    ref: "batch-0001",
++    timestamp: options.timestamp ?? NOW_SECONDS,
++    nonce: options.nonce ?? `nonce-${(nonceCounter += 1)}`,
++    body: options.body ?? '{"messages":[]}',
++  };
++  return {
++    method: "POST",
++    path: `/v1/workspaces/${slug}/batches`,
++    headers: {
++      "content-type": "application/json",
++      "x-margince-scope": parts.scope,
++      "x-margince-ref": parts.ref,
++      "x-margince-timestamp": String(parts.timestamp),
++      "x-margince-nonce": parts.nonce,
++      "x-margince-signature": `sha256=${sign(options.secret ?? SECRET, parts)}`,
++    },
++    body: parts.body,
++    ip: "203.0.113.7",
++  };
++}
++
++function withoutHeader(request: HttpRequest, name: string): HttpRequest {
++  return { ...request, headers: Object.fromEntries(Object.entries(request.headers).filter(([key]) => key !== name)) };
++}
++
++/** A batch for `acme-sales` signed over `timestamp` as the text it carries, which `sign` cannot do for a non-number. */
++function batchWithTimestampText(timestamp: string): HttpRequest {
++  const request = batch({ nonce: "text-timestamp" });
++  const bodyHash = createHash("sha256").update(request.body).digest("hex");
++  const canonical = ["messages:write", "acme-sales", "batch-0001", timestamp, "text-timestamp", bodyHash].join("\n");
++  const signature = createHmac("sha256", SECRET).update(canonical).digest("hex");
++  return {
++    ...request,
++    headers: { ...request.headers, "x-margince-timestamp": timestamp, "x-margince-signature": `sha256=${signature}` },
++  };
++}
++
++function handlerAt(nowSeconds = NOW_SECONDS) {
++  const clock = fakeClock(nowSeconds * 1000);
++  return { handle: createHandler({ secret: SECRET, clock }), clock };
++}
++
++describe("createHandler on the recorded pairs", () => {
++  it.each([
++    "accepted",
++    "accepted-window-edge",
++    "bad-signature",
++    "missing-header",
++    "stale-timestamp",
++    "stale-timestamp-future",
++    "reused-nonce",
++    "nonce-per-slug",
++    "nonce-not-burned",
++    "not-found",
++    "not-found-wrong-method",
++  ])("answers %s as recorded", (name) => {
++    const pair = loadPair(name);
++    expect(answer(replay(pair), pair.response)).toEqual({ ...pair.response });
++  });
++});
++
++describe("createHandler", () => {
++  it("accepts a signed batch with 202 and an empty body", () => {
++    const { handle } = handlerAt();
++    expect(handle(batch())).toEqual({ status: 202, headers: {}, body: "" });
++  });
++
++  it("accepts an empty body", () => {
++    const { handle } = handlerAt();
++    expect(handle(batch({ body: "" })).status).toBe(202);
++  });
++
++  it("answers invalid_signature for another secret, even when the timestamp is stale too", () => {
++    const { handle } = handlerAt();
++    const pair = loadPair("bad-signature");
++    expect(handle(batch({ secret: "another-secret" }))).toEqual(pair.response);
++    expect(handle(batch({ secret: "another-secret", timestamp: NOW_SECONDS - 1000 }))).toEqual(pair.response);
++  });
++
++  it("answers invalid_signature for a signature header without the sha256= prefix", () => {
++    const { handle } = handlerAt();
++    const request = batch();
++    const bare = request.headers["x-margince-signature"]?.slice("sha256=".length) ?? "";
++    expect(handle({ ...request, headers: { ...request.headers, "x-margince-signature": bare } }).status).toBe(401);
++  });
++
++  it.each(SIGNING_HEADERS)("answers missing_header when %s is absent or empty", (header) => {
++    const { handle } = handlerAt();
++    const expected = loadPair("missing-header").response;
++    const request = batch();
++    expect(handle(withoutHeader(request, header))).toEqual(expected);
++    expect(handle({ ...request, headers: { ...request.headers, [header]: "" } })).toEqual(expected);
++  });
++
++  it("answers missing_header before checking the signature", () => {
++    const { handle } = handlerAt();
++    const request = withoutHeader(batch({ secret: "another-secret" }), "x-margince-nonce");
++    expect(handle(request).body).toBe('{"error":"missing_header"}');
++  });
++
++  it("accepts a batch 300 seconds old or 300 seconds ahead", () => {
++    const { handle } = handlerAt();
++    expect(handle(batch({ timestamp: NOW_SECONDS - 300 })).status).toBe(202);
++    expect(handle(batch({ timestamp: NOW_SECONDS + 300 })).status).toBe(202);
++  });
++
++  it("answers stale_timestamp for a batch 301 seconds old or 301 seconds ahead", () => {
++    const { handle } = handlerAt();
++    expect(handle(batch({ timestamp: NOW_SECONDS - 301 }))).toEqual(loadPair("stale-timestamp").response);
++    expect(handle(batch({ timestamp: NOW_SECONDS + 301 }))).toEqual(loadPair("stale-timestamp-future").response);
++  });
++
++  it("measures the window in whole seconds of the clock", () => {
++    const { handle, clock } = handlerAt();
++    clock.set(NOW_SECONDS * 1000 + 999);
++    expect(handle(batch({ timestamp: NOW_SECONDS - 300 })).status).toBe(202);
++    clock.set(NOW_SECONDS * 1000 + 1000);
++    expect(handle(batch({ timestamp: NOW_SECONDS - 300 })).status).toBe(401);
++  });
++
++  it("answers stale_timestamp for a timestamp that is not digits only, signed as received", () => {
++    const { handle } = handlerAt();
++    const stale = loadPair("stale-timestamp").response;
++    expect(handle(batchWithTimestampText("abc"))).toEqual(stale);
++    expect(handle(batchWithTimestampText(`${NOW_SECONDS}.5`))).toEqual(stale);
++  });
++
++  it("signs the timestamp text as received: leading zeros are digits and inside the window", () => {
++    const { handle } = handlerAt();
++    expect(handle(batchWithTimestampText(`00${NOW_SECONDS}`)).status).toBe(202);
++  });
++
++  it("answers reused_nonce when an accepted batch arrives again inside the window", () => {
++    const { handle, clock } = handlerAt();
++    const request = batch();
++    expect(handle(request).status).toBe(202);
++    clock.set(clock.now() + 60_000);
++    expect(handle(request)).toEqual(loadPair("reused-nonce").response);
++  });
++
++  it("answers reused_nonce at timestamp + 300 seconds and stale_timestamp one second later", () => {
++    const { handle, clock } = handlerAt();
++    const request = batch();
++    handle(request);
++    clock.set((NOW_SECONDS + 300) * 1000);
++    expect(handle(request).status).toBe(409);
++    clock.set((NOW_SECONDS + 301) * 1000);
++    expect(handle(request).status).toBe(401);
++  });
++
++  it("scopes a nonce to its slug", () => {
++    const { handle } = handlerAt();
++    expect(handle(batch({ nonce: "shared" })).status).toBe(202);
++    expect(handle(batch({ nonce: "shared", slug: "beta-shop" }))).toEqual(loadPair("nonce-per-slug").response);
++    expect(handle(batch({ nonce: "shared", slug: "beta-shop" })).status).toBe(409);
++  });
++
++  it("does not remember the nonce of a refused request", () => {
++    const { handle } = handlerAt();
++    expect(handle(batch({ nonce: "n", secret: "another-secret" })).status).toBe(401);
++    expect(handle(batch({ nonce: "n", timestamp: NOW_SECONDS - 301 })).status).toBe(401);
++    expect(handle(batch({ nonce: "n" }))).toEqual(loadPair("nonce-not-burned").response);
++  });
++
++  it("answers invalid_signature before stale_timestamp and stale_timestamp before reused_nonce", () => {
++    const { handle } = handlerAt();
++    handle(batch({ nonce: "n" }));
++    expect(handle(batch({ nonce: "n", timestamp: NOW_SECONDS - 301 })).body).toBe('{"error":"stale_timestamp"}');
++    expect(handle(batch({ nonce: "n", secret: "another-secret" })).body).toBe('{"error":"invalid_signature"}');
++  });
++
++  it("answers not_found for another path, a trailing slash or a bad slug", () => {
++    const { handle } = handlerAt();
++    const expected = loadPair("not-found").response;
++    const request = batch();
++    for (const path of [
++      "/",
++      "/v1/batches",
++      "/v1/workspaces/acme-sales/batches/",
++      "/v1/workspaces/Acme/batches",
++      "/v1/workspaces/-acme/batches",
++      "/v1/workspaces/acme--sales/batches",
++      `/v1/workspaces/${"a".repeat(64)}/batches`,
++    ]) {
++      expect(handle({ ...request, path })).toEqual(expected);
++    }
++  });
++
++  it("accepts a slug of 63 characters", () => {
++    const { handle } = handlerAt();
++    expect(handle(batch({ slug: "a".repeat(63) })).status).toBe(202);
++  });
++
++  it("answers not_found for a method other than POST", () => {
++    const { handle } = handlerAt();
++    const expected = loadPair("not-found-wrong-method").response;
++    for (const method of ["GET", "PUT", "DELETE", "HEAD"]) {
++      expect(handle({ ...batch(), method })).toEqual(expected);
++    }
++  });
++});
+diff --git a/chatbridge/src/mock-margince/handler.ts b/chatbridge/src/mock-margince/handler.ts
+new file mode 100644
+index 0000000..9266027
+--- /dev/null
++++ b/chatbridge/src/mock-margince/handler.ts
+@@ -0,0 +1,76 @@
++import type { Clock } from "../clock.ts";
++import type { HttpHandler, HttpRequest, HttpResponse } from "../http.ts";
++import { verifyReceived } from "../margince/signature.ts";
++
++const ENDPOINT = /^\/v1\/workspaces\/([a-z0-9]+(?:-[a-z0-9]+)*)\/batches$/;
++const MAX_SLUG_LENGTH = 63;
++const WINDOW_SECONDS = 300;
++const SIGNATURE_PREFIX = "sha256=";
++
++const accepted: HttpResponse = { status: 202, headers: {}, body: "" };
++
++function refusal(status: number, error: string): HttpResponse {
++  return { status, headers: { "content-type": "application/json" }, body: JSON.stringify({ error }) };
++}
++
++/** The workspace slug of a batch push, or undefined when the request is not one. */
++function routeSlug(request: HttpRequest): string | undefined {
++  if (request.method !== "POST") {
++    return undefined;
++  }
++  const slug = ENDPOINT.exec(request.path)?.[1];
++  return slug !== undefined && slug.length <= MAX_SLUG_LENGTH ? slug : undefined;
++}
++
++function insideWindow(timestamp: string, nowSeconds: number): boolean {
++  return /^[0-9]+$/.test(timestamp) && Math.abs(nowSeconds - Number(timestamp)) <= WINDOW_SECONDS;
++}
++
++/**
++ * The Mock Margince: answers a signed batch push exactly as `contract/margince/signing.md` says.
++ * Nonces live in this handler's memory only.
++ */
++export function createHandler({ secret, clock }: { secret: string; clock: Pick<Clock, "now"> }): HttpHandler {
++  /** `slug\nnonce` -> the second after which the accepted request that used it is outside its window. */
++  const nonces = new Map<string, number>();
++
++  return (request) => {
++    const slug = routeSlug(request);
++    if (slug === undefined) {
++      return refusal(404, "not_found");
++    }
++
++    const scope = request.headers["x-margince-scope"];
++    const ref = request.headers["x-margince-ref"];
++    const timestamp = request.headers["x-margince-timestamp"];
++    const nonce = request.headers["x-margince-nonce"];
++    const signature = request.headers["x-margince-signature"];
++    if (!scope || !ref || !timestamp || !nonce || !signature) {
++      return refusal(400, "missing_header");
++    }
++
++    const parts = { scope, slug, ref, timestamp, nonce, body: request.body };
++    if (!signature.startsWith(SIGNATURE_PREFIX) || !verifyReceived(secret, parts, signature.slice(SIGNATURE_PREFIX.length))) {
++      return refusal(401, "invalid_signature");
++    }
++
++    const nowSeconds = Math.floor(clock.now() / 1000);
++    if (!insideWindow(timestamp, nowSeconds)) {
++      return refusal(401, "stale_timestamp");
++    }
++
++    const key = `${slug}\n${nonce}`;
++    const expires = nonces.get(key);
++    if (expires !== undefined && nowSeconds <= expires) {
++      return refusal(409, "reused_nonce");
++    }
++
++    for (const [remembered, until] of nonces) {
++      if (nowSeconds > until) {
++        nonces.delete(remembered);
++      }
++    }
++    nonces.set(key, Number(timestamp) + WINDOW_SECONDS);
++    return accepted;
++  };
++}

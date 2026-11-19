@@ -1,0 +1,27 @@
+{
+  "id": "S1-B",
+  "title": "Standard fixture covering every message kind",
+  "product": "chatbridge",
+  "base": "main",
+  "acceptance_criteria": [
+    "Given the standard fixture, when it is loaded, then it contains exactly 8 events: 7 messages and 1 reaction, with at least one direct message and one group message.",
+    "Given the standard fixture, when it is loaded, then the texts `Your OTP is 482910`, `Mã xác thực Zalo: 991204`, `Call me at +84 909 123 456` and `Invoice total: 500000 VND` each appear exactly once.",
+    "Given the standard fixture, when it is loaded, then exactly one message text has `String.length` 40000 and it is the last event.",
+    "Given the standard fixture, when it is loaded, then every event's `at_ms` is 1,000 more than the previous one, starting at 0.",
+    "Given the standard fixture, when it is loaded, then its reaction targets line 1, the message `Hello from Customer A`."
+  ],
+  "touches": [
+    "chatbridge/fixtures/fake/standard.jsonl",
+    "chatbridge/src/fake/standard.test.ts"
+  ],
+  "depends_on": [
+    "S1-A"
+  ],
+  "source": {
+    "adapter": "bench",
+    "ref": "bench/chatbridge#2"
+  },
+  "max_lanes": 1,
+  "time_limit_s": 3000,
+  "op_limit": 300
+}

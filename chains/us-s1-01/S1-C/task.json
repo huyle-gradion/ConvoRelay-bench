@@ -1,0 +1,28 @@
+{
+  "id": "S1-C",
+  "title": "Replay fixture events at a configured speed",
+  "product": "chatbridge",
+  "base": "main",
+  "acceptance_criteria": [
+    "Given events at 0, 1000 and 3000 ms and speed 1, when they are replayed with a fake clock, then the clock is asked to wait 0, 1000 and 2000 ms, in that order, and the three events are emitted in file order.",
+    "Given the same events and speed 10, when they are replayed, then the waits are 0, 100 and 200 ms.",
+    "Given the same events and speed 0, when they are replayed, then no wait is requested and all three events are emitted in order.",
+    "Given base time `2026-01-01T00:00:00Z`, a message at 1500 ms on line 4 and a reaction on line 6 whose target is line 4, when they are replayed, then the message has id `fake:4` and time `2026-01-01T00:00:01.500Z` and the reaction has id `fake:6` and target `fake:4`.",
+    "Given one fixture replayed twice with the same base time, when both outputs are compared, then they are identical, ids, times and key order included.",
+    "Given a negative speed, when a replay starts, then it fails before emitting any event, with an error naming `speed`."
+  ],
+  "touches": [
+    "chatbridge/src/fake/replay.test.ts",
+    "chatbridge/src/fake/replay.ts"
+  ],
+  "depends_on": [
+    "S1-A"
+  ],
+  "source": {
+    "adapter": "bench",
+    "ref": "bench/chatbridge#3"
+  },
+  "max_lanes": 1,
+  "time_limit_s": 3000,
+  "op_limit": 300
+}

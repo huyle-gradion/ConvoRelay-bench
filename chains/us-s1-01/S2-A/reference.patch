@@ -1,0 +1,143 @@
+diff --git a/chatbridge/src/margince/signature.test.ts b/chatbridge/src/margince/signature.test.ts
+new file mode 100644
+index 0000000..24ce2bc
+--- /dev/null
++++ b/chatbridge/src/margince/signature.test.ts
+@@ -0,0 +1,91 @@
++import { readFileSync } from "node:fs";
++import { fileURLToPath } from "node:url";
++import { describe, expect, it } from "vitest";
++import { sign, verify, verifyReceived } from "./signature.ts";
++import type { SigningParts } from "./signature.ts";
++
++type VectorBody = string | { repeat: string; times: number };
++
++interface RawVector {
++  name: string;
++  secret: string;
++  parts: Omit<SigningParts, "body"> & { body: VectorBody };
++  signature: string;
++}
++
++interface Vector {
++  name: string;
++  secret: string;
++  parts: SigningParts;
++  signature: string;
++}
++
++// vectors.json spells a long body as {"repeat": text, "times": n}; every other body is the string itself.
++const vectorsFile = fileURLToPath(new URL("../../contract/margince/vectors.json", import.meta.url));
++const vectors: Vector[] = (JSON.parse(readFileSync(vectorsFile, "utf8")) as { vectors: RawVector[] }).vectors.map((v) => ({
++  ...v,
++  parts: { ...v.parts, body: typeof v.parts.body === "string" ? v.parts.body : v.parts.body.repeat.repeat(v.parts.body.times) },
++}));
++
++const changes: Record<keyof SigningParts, (parts: SigningParts) => SigningParts> = {
++  scope: (parts) => ({ ...parts, scope: `${parts.scope}x` }),
++  slug: (parts) => ({ ...parts, slug: `${parts.slug}x` }),
++  ref: (parts) => ({ ...parts, ref: `${parts.ref}x` }),
++  timestamp: (parts) => ({ ...parts, timestamp: parts.timestamp + 1 }),
++  nonce: (parts) => ({ ...parts, nonce: `${parts.nonce}x` }),
++  body: (parts) => ({ ...parts, body: `${parts.body} ` }),
++};
++
++describe("sign", () => {
++  it("has vectors to check", () => {
++    expect(vectors.length).toBeGreaterThan(0);
++  });
++
++  it.each(vectors)("signs vector $name as recorded", (vector) => {
++    expect(sign(vector.secret, vector.parts)).toBe(vector.signature);
++  });
++});
++
++describe("verify", () => {
++  it.each(vectors)("accepts the recorded signature of vector $name", (vector) => {
++    expect(verify(vector.secret, vector.parts, vector.signature)).toBe(true);
++  });
++
++  it.each(vectors.flatMap((vector) => Object.keys(changes).map((field) => [vector, field] as const)))(
++    "rejects vector $0.name with its $1 changed",
++    (vector, field) => {
++      const change = changes[field as keyof SigningParts];
++      expect(verify(vector.secret, change(vector.parts), vector.signature)).toBe(false);
++    },
++  );
++
++  it.each(vectors)("rejects vector $name checked with another secret", (vector) => {
++    expect(verify(`${vector.secret}x`, vector.parts, vector.signature)).toBe(false);
++  });
++
++  it.each(vectors)("returns false without throwing for a malformed signature of vector $name", (vector) => {
++    const malformed = [
++      "",
++      vector.signature.slice(0, 63),
++      `${vector.signature}0`,
++      vector.signature.toUpperCase(),
++      `sha256=${vector.signature}`,
++      "z".repeat(64),
++    ];
++    for (const signature of malformed) {
++      expect(verify(vector.secret, vector.parts, signature)).toBe(false);
++    }
++  });
++});
++
++describe("verifyReceived", () => {
++  it.each(vectors)("verifies vector $name with the timestamp as text", (vector) => {
++    const parts = { ...vector.parts, timestamp: String(vector.parts.timestamp) };
++    expect(verifyReceived(vector.secret, parts, vector.signature)).toBe(true);
++  });
++
++  it.each(vectors)("signs the timestamp text as received, so a leading zero changes vector $name", (vector) => {
++    const parts = { ...vector.parts, timestamp: `0${vector.parts.timestamp}` };
++    expect(verifyReceived(vector.secret, parts, vector.signature)).toBe(false);
++  });
++});
+diff --git a/chatbridge/src/margince/signature.ts b/chatbridge/src/margince/signature.ts
+new file mode 100644
+index 0000000..57b508e
+--- /dev/null
++++ b/chatbridge/src/margince/signature.ts
+@@ -0,0 +1,40 @@
++import { createHash, createHmac, timingSafeEqual } from "node:crypto";
++
++/** What a Margince request signs. `timestamp` is Unix time in whole seconds. */
++export interface SigningParts {
++  scope: string;
++  slug: string;
++  ref: string;
++  timestamp: number;
++  nonce: string;
++  body: string;
++}
++
++/** The same parts as a receiver holds them: the timestamp is the header text exactly as sent, which is what it signs. */
++export type ReceivedParts = Omit<SigningParts, "timestamp"> & { timestamp: string };
++
++const SIGNATURE_PATTERN = /^[0-9a-f]{64}$/;
++
++function signReceived(secret: string, parts: ReceivedParts): string {
++  const bodyHash = createHash("sha256").update(parts.body, "utf8").digest("hex");
++  const canonical = [parts.scope, parts.slug, parts.ref, parts.timestamp, parts.nonce, bodyHash].join("\n");
++  return createHmac("sha256", secret).update(canonical, "utf8").digest("hex");
++}
++
++/** The 64-character lower-case hex HMAC-SHA256 of `parts`, without the `sha256=` prefix (see `contract/margince/signing.md`). */
++export function sign(secret: string, parts: SigningParts): string {
++  return signReceived(secret, { ...parts, timestamp: String(parts.timestamp) });
++}
++
++/** Whether `signature` (lower-case hex, no prefix) is the signature of `parts` as received. Never throws. */
++export function verifyReceived(secret: string, parts: ReceivedParts, signature: string): boolean {
++  if (!SIGNATURE_PATTERN.test(signature)) {
++    return false;
++  }
++  return timingSafeEqual(Buffer.from(signReceived(secret, parts), "hex"), Buffer.from(signature, "hex"));
++}
++
++/** Whether `signature` (lower-case hex, no prefix) is the signature of `parts`. Never throws. */
++export function verify(secret: string, parts: SigningParts, signature: string): boolean {
++  return verifyReceived(secret, { ...parts, timestamp: String(parts.timestamp) }, signature);
++}

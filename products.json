@@ -1,0 +1,13 @@
+{
+  "factory": {
+    "kind": "git",
+    "unit": ["go", "-C", "factory", "test", "-count=1", "./tests/unit/..."],
+    "hidden": ["go", "-C", "factory", "test", "-count=1", "-json", "-run", "^TestHidden", "./tests/acceptance/..."]
+  },
+  "tinyledger": {
+    "kind": "tree",
+    "path": "products/tinyledger",
+    "unit": ["go", "test", "-count=1", "./..."],
+    "hidden": ["go", "test", "-count=1", "-json", "-run", "^TestHidden", "./..."]
+  }
+}
