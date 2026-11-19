@@ -129,7 +129,7 @@ expect "reviews: claude-opus-5-5" "$reviews" "select(.model == \"claude-opus-5-5
 expect "reviews: medium thinking" "$reviews" "select(.effort == \"medium\")"
 expect "reviews: bugs and security run /pstack:thermo-nuclear-review" "$reviews | select(.kind == \"review-bugs-security\")" "select(.first_line == \"/pstack:thermo-nuclear-review\")"
 expect "reviews: quality runs thermo-nuclear-code-quality-review and loads the ponytail-review plugin" "$reviews | select(.kind == \"review-quality\")" "select(.first_line == \"/pstack:thermo-nuclear-code-quality-review\" and (.plugin_dirs | length) == 2)"
-expect "reviews: read-only (dontAsk, no Edit/Write/NotebookEdit, git reads only)" "$reviews" "select(.permission_mode == \"dontAsk\" and (.disallowed | test(\"Edit\") and test(\"Write\") and test(\"NotebookEdit\")) and (.allowed | test(\"Bash\\\\(git diff\") and (test(\"Edit|Write\") | not)))"
+expect "reviews: read-only (dontAsk, no shell, no Edit/Write/NotebookEdit)" "$reviews" "select(.permission_mode == \"dontAsk\" and (.disallowed | test(\"Bash\") and test(\"Edit\") and test(\"Write\") and test(\"NotebookEdit\")) and (.allowed | test(\"Bash|Edit|Write\") | not))"
 expect "reviews: the checkout holds no hidden test" "$reviews" "select(.hidden_files == 0)"
 
 # t12's omp sessions: the argv of every real session is in omp.log.
@@ -154,7 +154,8 @@ case $deep_types in
   *tdd-engineer*) case $deep_types in *tdd-red* | *tdd-green* | *tdd-list*) echo "FAIL  t12-deep: the run has tdd steps: $deep_types"; problems+=("t12-deep steps") ;; *) echo "ok    t12-deep: one engineer step, no analyzer, red, green or refactor" ;; esac ;;
   *) echo "FAIL  t12-deep: no tdd-engineer event: $deep_types"; problems+=("t12-deep steps") ;;
 esac
-if factorybench report factories --db "$db" 2>/dev/null | grep -q "bench-t12-deep"; then echo "ok    t12-deep: FactoryBench holds the factory bench-t12-deep"; else echo "FAIL  t12-deep: bench-t12-deep reported nothing"; problems+=("t12-deep factory"); fi
+# grep without -q reads all input: under pipefail, grep -q exiting early made the producer die of SIGPIPE and the check flaky.
+if factorybench report factories --db "$db" 2>/dev/null | grep "bench-t12-deep" >/dev/null; then echo "ok    t12-deep: FactoryBench holds the factory bench-t12-deep"; else echo "FAIL  t12-deep: bench-t12-deep reported nothing"; problems+=("t12-deep factory"); fi
 
 # Every scored run must have judged both reviewers, and a `changes` or a missing result must block.
 runs=$(cat "$BENCH_OUT"/*/results.jsonl | jq -s .)
